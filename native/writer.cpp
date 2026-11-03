@@ -13,6 +13,8 @@
 #include <iostream>
 #include <filesystem>
 #include <limits>
+#include <charconv>
+#include <cstdio>
 #include "json.hpp"
 using json=nlohmann::json;
 namespace fs=std::filesystem;
@@ -26,6 +28,39 @@ osg::ref_ptr<osg::PagedLOD> reference(const json& j) {
     n->setCenterMode(osg::LOD::USER_DEFINED_CENTER);n->setCenter(center(j));n->setRadius(j.value("radius",1.0));
     n->setFileName(0,j.at("path").get<std::string>());n->setRange(0,0,std::numeric_limits<float>::max());
     return n;
+}
+
+// Bulk text formatting stays in this isolated native process. It also avoids
+// boxing hundreds of millions of NumPy scalars in Python on large exports.
+void write_obj(const json& job) {
+    std::ifstream in(fs::u8path(job.at("buffer").get<std::string>()),std::ios::binary);
+    std::ofstream out(fs::u8path(job.at("objOutput").get<std::string>()),std::ios::binary);
+    if(!in||!out)throw std::runtime_error("Cannot open OBJ stream");
+    std::string buffer;buffer.reserve(2*1024*1024);
+    auto flush=[&](){if(buffer.size()>1024*1024){out.write(buffer.data(),buffer.size());buffer.clear();}};
+    auto number=[&](double value){char text[48];auto r=std::to_chars(text,text+48,value,std::chars_format::general,9);if(r.ec!=std::errc())throw std::runtime_error("Invalid coordinate");buffer.append(text,r.ptr);};
+    auto integer=[&](uint64_t value){char text[32];auto r=std::to_chars(text,text+32,value);buffer.append(text,r.ptr);};
+    for(auto& p:job.at("primitives")) {
+        uint32_t nv=p.at("vertices"),ni=p.at("indices");bool uv=p.at("uv"),normal=p.at("normals");
+        uint64_t vb=p.at("vertexBase"),tb=p.at("uvBase"),nb=p.at("normalBase");
+        in.seekg(p.at("offset").get<uint64_t>());
+        std::vector<osg::Vec3d> xyz(nv);read_array(in,xyz.data(),nv);
+        std::vector<osg::Vec2> tex(uv?nv:0);if(uv)read_array(in,tex.data(),nv);
+        std::vector<osg::Vec3> normals(normal?nv:0);if(normal)read_array(in,normals.data(),nv);
+        std::vector<uint32_t> idx(ni);read_array(in,idx.data(),ni);
+        buffer+="\ng "+p.at("group").get<std::string>()+"\nusemtl "+p.at("materialName").get<std::string>()+"\n";
+        for(auto& v:xyz){buffer+="v ";number(v.x());buffer+=' ';number(v.y());buffer+=' ';number(v.z());buffer+='\n';flush();}
+        for(auto& v:tex){buffer+="vt ";number(v.x());buffer+=' ';number(v.y());buffer+='\n';flush();}
+        for(auto& v:normals){buffer+="vn ";number(v.x());buffer+=' ';number(v.y());buffer+=' ';number(v.z());buffer+='\n';flush();}
+        for(size_t i=0;i<idx.size();i+=3){
+            buffer+='f';for(int k=0;k<3;k++){
+                uint64_t index=idx[i+k];buffer+=' ';integer(vb+index+1);
+                if(uv||normal){buffer+='/';if(uv)integer(tb+index+1);if(normal){buffer+='/';integer(nb+index+1);}}
+            }buffer+='\n';flush();
+        }
+    }
+    out.write(buffer.data(),buffer.size());out.flush();
+    if(!out)throw std::runtime_error("OBJ write failed (disk full?)");
 }
 
 struct Rebase:osg::NodeVisitor {
@@ -49,7 +84,8 @@ osg::ref_ptr<osg::Node> create(const json& job) {
             f.seekg(p["offset"].get<uint64_t>());
             auto g=new osg::Geometry;
             uint32_t nv=p["vertices"],ni=p["indices"];
-            auto xyz=new osg::Vec3Array(nv);read_array(f,&(*xyz)[0],nv);g->setVertexArray(xyz);
+            std::vector<osg::Vec3d> precise(nv);read_array(f,precise.data(),nv);
+            auto xyz=new osg::Vec3Array(nv);for(size_t i=0;i<nv;i++)(*xyz)[i]=osg::Vec3(precise[i]);g->setVertexArray(xyz);
             if(p["uv"].get<bool>()) {auto uv=new osg::Vec2Array(nv);read_array(f,&(*uv)[0],nv);g->setTexCoordArray(0,uv);}
             if(p["normals"].get<bool>()) {auto n=new osg::Vec3Array(nv);read_array(f,&(*n)[0],nv);g->setNormalArray(n,osg::Array::BIND_PER_VERTEX);}
             auto idx=new osg::DrawElementsUInt(GL_TRIANGLES,ni);read_array(f,&(*idx)[0],ni);g->addPrimitiveSet(idx);
@@ -128,6 +164,8 @@ int main(int argc,char**argv) {
             std::cout<<j.dump()<<std::endl;return 0;
         }
         std::ifstream f(fs::u8path(argv[2]));json job;f>>job;
+        if(job.contains("objOutput"))write_obj(job);
+        if(!job.value("writeOsg",true)){std::cout<<"{\"ok\":true}"<<std::endl;return 0;}
         auto root=create(job);osg::ref_ptr<osgDB::Options> options=new osgDB::Options;
         options->setPluginStringData("WriteImageHint","IncludeFile");
         std::string output=job.at("output");

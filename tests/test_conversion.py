@@ -1,6 +1,7 @@
 import json
 import shutil
 import tempfile
+import struct
 import unittest
 from pathlib import Path
 from converter import convert,Control,RUNTIME
@@ -8,6 +9,19 @@ from test_gltf import triangle
 
 
 class ConversionTests(unittest.TestCase):
+    def test_obj_indices_across_multiple_nodes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);p=root/'input/model.glb';p.parent.mkdir();triangle(p)
+            data=p.read_bytes();length=struct.unpack_from('<I',data,12)[0]
+            doc=json.loads(data[20:20+length]);doc['nodes'].append({'mesh':0,'translation':[10,0,0]});doc['scenes'][0]['nodes']=[0,1]
+            payload=json.dumps(doc).encode();payload+=b' '*((-len(payload))%4);binary=data[20+length:]
+            p.write_bytes(struct.pack('<5I',0x46546c67,2,20+len(payload)+len(binary),len(payload),0x4e4f534a)+payload+binary)
+            out=root/'out';report=convert(p,out,'obj',Control(lambda *args:None))
+            self.assertEqual(report['obj_triangles'],2)
+            text=(out/'obj/Model.obj').read_text()
+            self.assertIn('f 1/1 2/2 3/3',text);self.assertIn('f 4/4 5/5 6/6',text)
+            self.assertFalse((out/'osgb').exists())
+
     def test_obj_and_osgb_round_trip(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);p=root/'input/model.glb';p.parent.mkdir();triangle(p)

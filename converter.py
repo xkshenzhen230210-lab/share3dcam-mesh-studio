@@ -49,9 +49,9 @@ class Control:
 class ObjWriter:
     def __init__(self,folder):
         self.folder=folder;folder.mkdir(parents=True)
-        self.obj=(folder/'Model.obj').open('w',encoding='utf-8',buffering=1024*1024)
+        self.obj=(folder/'Model.obj').open('wb',buffering=1024*1024)
         self.mtl=(folder/'Model.mtl').open('w',encoding='utf-8')
-        self.obj.write('# Z-up local coordinates; units: metres; see metadata.xml\nmtllib Model.mtl\n')
+        self.obj.write(b'# Z-up local coordinates; units: metres; see metadata.xml\nmtllib Model.mtl\n')
         self.v=0;self.vt=0;self.vn=0;self.materials=set();self.faces=0
     def close(self):self.obj.close();self.mtl.close()
     def add(self,part,texture,name,group):
@@ -61,23 +61,10 @@ class ObjWriter:
             self.mtl.write(f'newmtl {name}\nKa 1 1 1\nKd {c[0]} {c[1]} {c[2]}\nd {c[3]}\nillum 1\n')
             if texture:self.mtl.write(f'map_Kd {texture}\n')
             self.mtl.write('\n')
-        self.obj.write(f'\ng {group}\nusemtl {name}\n')
-        np.savetxt(self.obj,xyz,fmt='v %.9g %.9g %.9g')
-        if uv is not None:np.savetxt(self.obj,uv,fmt='vt %.9g %.9g')
-        if normal is not None:np.savetxt(self.obj,normal,fmt='vn %.9g %.9g %.9g')
-        # Write bounded batches; each stream has its own global index offset.
-        for start in range(0,len(idx),20000):
-            a=idx[start:start+20000].astype(np.int64)
-            if uv is not None and normal is not None:
-                out=np.stack([a+self.v+1,a+self.vt+1,a+self.vn+1],axis=2).reshape(-1,9)
-                fmt='f %d/%d/%d %d/%d/%d %d/%d/%d'
-            elif uv is not None:
-                out=np.stack([a+self.v+1,a+self.vt+1],axis=2).reshape(-1,6);fmt='f %d/%d %d/%d %d/%d'
-            elif normal is not None:
-                out=np.stack([a+self.v+1,a+self.vn+1],axis=2).reshape(-1,6);fmt='f %d//%d %d//%d %d//%d'
-            else:out=a+self.v+1;fmt='f %d %d %d'
-            np.savetxt(self.obj,out,fmt=fmt)
+        entry={'materialName':name,'group':group,'vertexBase':self.v,'uvBase':self.vt,'normalBase':self.vn}
         self.v+=len(xyz);self.vt+=len(uv) if uv is not None else 0;self.vn+=len(normal) if normal is not None else 0;self.faces+=len(idx)
+        return entry
+
 
 
 def input_tree(path):
@@ -126,7 +113,7 @@ def convert(input_path,output_path,formats='both',control=None):
         raise ValueError('输出目录必须独立于输入目录，避免覆盖或混入原数据')
     if output.exists() and any(output.iterdir()):raise ValueError('输出目录不是空目录，请选择新目录')
     all_nodes=list(flatten(tree));selected=set(obj_nodes(tree));want_obj=formats in ('obj','both');want_osg=formats in ('osgb','both')
-    if want_osg and not (RUNTIME/'mesh_writer.exe').is_file():raise RuntimeError('缺少内置 OSGB 写入器，请运行完整软件包')
+    if not (RUNTIME/'mesh_writer.exe').is_file():raise RuntimeError('缺少内置转换引擎，请运行完整软件包')
     output.mkdir(parents=True,exist_ok=True)
     if want_osg:(output/'osgb').mkdir()
     report={'source':str(source),'input_kind':kind,'formats':formats,'state':'running','nodes':len(all_nodes),
@@ -181,12 +168,12 @@ def convert(input_path,output_path,formats='both',control=None):
                                 texture_name='tex_'+texpath.name if texpath else None
                                 if texpath and not (obj.folder/texture_name).exists():shutil.copy2(texpath,obj.folder/texture_name)
                                 material_name='mat_'+hashlib.sha256((digest+json.dumps(part['material'],sort_keys=True)).encode()).hexdigest()[:24]
-                                obj.add(part,texture_name,material_name,f'{node.output.stem}_n{part["node"]}_p{part["primitive"]}')
+                                entry.update(obj.add(part,texture_name,material_name,f'{node.output.stem}_n{part["node"]}_p{part["primitive"]}'))
                                 global_min=np.minimum(global_min,xyz.min(axis=0));global_max=np.maximum(global_max,xyz.max(axis=0))
-                            if want_osg:
+                            if want_osg or do_obj:
                                 for key in ('positions','uv','normals','indices'):
                                     arr=part[key]
-                                    if arr is not None:np.asarray(arr,dtype='<u4' if key=='indices' else '<f4').tofile(binary)
+                                    if arr is not None:np.asarray(arr,dtype='<u4' if key=='indices' else '<f8' if key=='positions' else '<f4').tofile(binary)
                                 primitives.append(entry)
                     if np.isfinite(tile_min).all() and kind=='glb':
                         node.center=((tile_min+tile_max)/2).tolist();node.radius=float(np.linalg.norm(tile_max-tile_min)/2)
@@ -194,15 +181,17 @@ def convert(input_path,output_path,formats='both',control=None):
                     lo=np.min([np.array(c.center)-c.radius for c in node.children],axis=0)
                     hi=np.max([np.array(c.center)+c.radius for c in node.children],axis=0)
                     node.center=((lo+hi)/2).tolist();node.radius=float(np.linalg.norm(hi-lo)/2)
-                if want_osg:
-                    destination=output/'osgb'/node.output;destination.parent.mkdir(parents=True,exist_ok=True)
+                if want_osg or do_obj:
+                    destination=output/'osgb'/node.output
+                    if want_osg:destination.parent.mkdir(parents=True,exist_ok=True)
                     child_page=node.output.with_stem(node.output.stem+'_children')
-                    job={'output':'result.osgb','primitives':primitives,'children':[],
+                    job={'writeOsg':want_osg,'output':'result.osgb','primitives':primitives,'children':[],
                          'center':node.center,'radius':max(node.radius,.001),'refine':node.refine,
                          'threshold':max(1,min(1e8,2*node.radius/max(node.error,1e-9)*16)),
                          'childrenPage':child_page.name,'childrenOutput':'children.osgb'}
                     if primitives:job['buffer']=buffer.name
-                    for child_index,c in enumerate(node.children):
+                    if do_obj:job['objOutput']='part.obj'
+                    for child_index,c in enumerate(node.children if want_osg else []):
                         rel=os.path.relpath(c.output,node.output.parent).replace('\\','/')
                         child={'path':rel,'center':c.center,'radius':max(c.radius,.001)}
                         if primitives:
@@ -211,7 +200,9 @@ def convert(input_path,output_path,formats='both',control=None):
                         job['children'].append(child)
                     write_json(work/'job.json',job)
                     control.run([RUNTIME/'mesh_writer.exe','write','job.json'],work)
-                    shutil.copy2(work/'result.osgb',destination)
+                    if want_osg:shutil.copy2(work/'result.osgb',destination)
+                    if do_obj:
+                        with (work/'part.obj').open('rb') as part_file:shutil.copyfileobj(part_file,obj.obj,1024*1024)
                     if (work/'children.osgb').is_file():shutil.copy2(work/'children.osgb',output/'osgb'/child_page)
                 report['converted'].append({'output':label,'source':str(node.source) if node.source else None,
                                             'primitives':len(primitives),'obj':do_obj})

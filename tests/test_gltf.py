@@ -26,6 +26,15 @@ def triangle(path, matrix=None):
 
 
 class GlbTests(unittest.TestCase):
+    def test_b3dm_rtc_center_is_applied_after_axis_conversion(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'x.glb';triangle(p);payload=p.read_bytes()
+            feature=json.dumps({'BATCH_LENGTH':0,'RTC_CENTER':[10,20,30]}).encode()
+            feature+=b' '*((-(28+len(feature)))%8)
+            b=Path(d)/'x.b3dm'
+            b.write_bytes(struct.pack('<4s6I',b'b3dm',1,28+len(feature)+len(payload),len(feature),0,0,0)+feature+payload)
+            with Glb(b) as g:np.testing.assert_allclose(next(g.primitives())['positions'][0],[11,17,32])
+
     def test_y_up_and_node_transform_are_applied_in_order(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'x.glb';m=np.eye(4);m[:3,3]=[10,20,30];triangle(p,m)
