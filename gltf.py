@@ -3,6 +3,7 @@ import base64
 import json
 import mmap
 import struct
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 import numpy as np
@@ -10,6 +11,12 @@ import numpy as np
 Y_TO_Z = np.array([[1,0,0,0],[0,0,-1,0],[0,1,0,0],[0,0,0,1]], dtype=float)
 DTYPES = {5120:'i1',5121:'u1',5122:'<i2',5123:'<u2',5125:'<u4',5126:'<f4'}
 WIDTHS = {'SCALAR':1,'VEC2':2,'VEC3':3,'VEC4':4}
+
+
+@lru_cache(maxsize=16)
+def parse_document(data):
+    """Immutable source JSON shared by the many chunks of one GLB."""
+    return json.loads(data)
 
 
 def local_uri(base, uri):
@@ -55,7 +62,7 @@ class Glb:
             while pos<start+total:
                 size,kind=struct.unpack_from('<II',self.mm,pos);pos+=8
                 if pos+size>start+total:raise ValueError('GLB chunk 越界')
-                if kind==0x4e4f534a:self.doc=json.loads(self.mm[pos:pos+size])
+                if kind==0x4e4f534a:self.doc=parse_document(self.mm[pos:pos+size])
                 if kind==0x004e4942:self.bin_offset=pos;self.bin_length=size
                 pos+=size
             if self.doc is None or self.bin_offset is None:raise ValueError('缺少 GLB JSON/BIN')

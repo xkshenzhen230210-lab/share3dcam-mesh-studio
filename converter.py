@@ -178,7 +178,8 @@ def _convert(input_path,output_path,formats='both',control=None,clip_box=None,pr
                             geometry_count+=len(part['indices'])
                             xyz=part['positions'];tile_min=np.minimum(tile_min,xyz.min(axis=0));tile_max=np.maximum(tile_max,xyz.max(axis=0))
                             entry={'offset':binary.tell(),'vertices':len(xyz),'indices':part['indices'].size,
-                                   'uv':part['uv'] is not None,'normals':part['normals'] is not None,'color':part['color']}
+                                   'uv':part['uv'] is not None,'normals':part['normals'] is not None,'color':part['color'],
+                                   'attributesDouble':True}
                             for key in ['doubleSided','alphaMode','alphaCutoff']:
                                 if key in part['material']:entry[key]=part['material'][key]
                             texpath=None;digest='plain'
@@ -208,7 +209,7 @@ def _convert(input_path,output_path,formats='both',control=None,clip_box=None,pr
                             if want_osg or do_obj:
                                 for key in ('positions','uv','normals','indices'):
                                     arr=part[key]
-                                    if arr is not None:np.asarray(arr,dtype='<u4' if key=='indices' else '<f8' if key=='positions' else '<f4').tofile(binary)
+                                    if arr is not None:np.asarray(arr,dtype='<u4' if key=='indices' else '<f8').tofile(binary)
                                 primitives.append(entry)
                     if np.isfinite(tile_min).all() and kind!='3dtiles':
                         node.center=((tile_min+tile_max)/2).tolist();node.radius=float(np.linalg.norm(tile_max-tile_min)/2)

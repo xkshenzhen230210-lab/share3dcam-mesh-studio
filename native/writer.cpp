@@ -38,15 +38,20 @@ void write_obj(const json& job) {
     if(!in||!out)throw std::runtime_error("Cannot open OBJ stream");
     std::string buffer;buffer.reserve(2*1024*1024);
     auto flush=[&](){if(buffer.size()>1024*1024){out.write(buffer.data(),buffer.size());buffer.clear();}};
-    auto number=[&](double value){char text[48];auto r=std::to_chars(text,text+48,value,std::chars_format::general,9);if(r.ec!=std::errc())throw std::runtime_error("Invalid coordinate");buffer.append(text,r.ptr);};
+    auto number=[&](double value){char text[48];auto r=std::to_chars(text,text+48,value,std::chars_format::general,std::numeric_limits<double>::max_digits10);if(r.ec!=std::errc())throw std::runtime_error("Invalid coordinate");buffer.append(text,r.ptr);};
     auto integer=[&](uint64_t value){char text[32];auto r=std::to_chars(text,text+32,value);buffer.append(text,r.ptr);};
     for(auto& p:job.at("primitives")) {
         uint32_t nv=p.at("vertices"),ni=p.at("indices");bool uv=p.at("uv"),normal=p.at("normals");
         uint64_t vb=p.at("vertexBase"),tb=p.at("uvBase"),nb=p.at("normalBase");
         in.seekg(p.at("offset").get<uint64_t>());
         std::vector<osg::Vec3d> xyz(nv);read_array(in,xyz.data(),nv);
-        std::vector<osg::Vec2> tex(uv?nv:0);if(uv)read_array(in,tex.data(),nv);
-        std::vector<osg::Vec3> normals(normal?nv:0);if(normal)read_array(in,normals.data(),nv);
+        std::vector<osg::Vec2d> tex(uv?nv:0);std::vector<osg::Vec3d> normals(normal?nv:0);
+        if(p.value("attributesDouble",false)) {
+            if(uv)read_array(in,tex.data(),nv);if(normal)read_array(in,normals.data(),nv);
+        } else {
+            if(uv){std::vector<osg::Vec2> a(nv);read_array(in,a.data(),nv);for(size_t k=0;k<nv;k++)tex[k]=osg::Vec2d(a[k]);}
+            if(normal){std::vector<osg::Vec3> a(nv);read_array(in,a.data(),nv);for(size_t k=0;k<nv;k++)normals[k]=osg::Vec3d(a[k]);}
+        }
         std::vector<uint32_t> idx(ni);read_array(in,idx.data(),ni);
         buffer+="\ng "+p.at("group").get<std::string>()+"\nusemtl "+p.at("materialName").get<std::string>()+"\n";
         for(auto& v:xyz){buffer+="v ";number(v.x());buffer+=' ';number(v.y());buffer+=' ';number(v.z());buffer+='\n';flush();}
@@ -86,8 +91,8 @@ osg::ref_ptr<osg::Node> create(const json& job) {
             uint32_t nv=p["vertices"],ni=p["indices"];
             std::vector<osg::Vec3d> precise(nv);read_array(f,precise.data(),nv);
             auto xyz=new osg::Vec3Array(nv);for(size_t i=0;i<nv;i++)(*xyz)[i]=osg::Vec3(precise[i]);g->setVertexArray(xyz);
-            if(p["uv"].get<bool>()) {auto uv=new osg::Vec2Array(nv);read_array(f,&(*uv)[0],nv);g->setTexCoordArray(0,uv);}
-            if(p["normals"].get<bool>()) {auto n=new osg::Vec3Array(nv);read_array(f,&(*n)[0],nv);g->setNormalArray(n,osg::Array::BIND_PER_VERTEX);}
+            if(p["uv"].get<bool>()) {auto uv=new osg::Vec2Array(nv);if(p.value("attributesDouble",false)){std::vector<osg::Vec2d>a(nv);read_array(f,a.data(),nv);for(size_t k=0;k<nv;k++)(*uv)[k]=osg::Vec2(a[k]);}else read_array(f,&(*uv)[0],nv);g->setTexCoordArray(0,uv);}
+            if(p["normals"].get<bool>()) {auto n=new osg::Vec3Array(nv);if(p.value("attributesDouble",false)){std::vector<osg::Vec3d>a(nv);read_array(f,a.data(),nv);for(size_t k=0;k<nv;k++)(*n)[k]=osg::Vec3(a[k]);}else read_array(f,&(*n)[0],nv);g->setNormalArray(n,osg::Array::BIND_PER_VERTEX);}
             auto idx=new osg::DrawElementsUInt(GL_TRIANGLES,ni);read_array(f,&(*idx)[0],ni);g->addPrimitiveSet(idx);
             auto colors=new osg::Vec4Array;auto c=p["color"];colors->push_back(osg::Vec4(c[0],c[1],c[2],c[3]));g->setColorArray(colors,osg::Array::BIND_OVERALL);
             auto state=g->getOrCreateStateSet();state->setMode(GL_LIGHTING,osg::StateAttribute::OFF);

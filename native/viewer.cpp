@@ -52,7 +52,8 @@ struct DisplayMaterials:osg::NodeVisitor {
 void state(json value){std::ofstream f("state.tmp");f<<value.dump();f.close();MoveFileExW(L"state.tmp",L"state.json",MOVEFILE_REPLACE_EXISTING);}
 int main(int argc,char**argv){try{
  if(argc!=2)throw std::runtime_error("Expected job.json");std::ifstream jf(fs::u8path(argv[1]));json job;jf>>job;
- auto model=osgDB::readRefNodeFile(job.at("source").get<std::string>());if(!model)throw std::runtime_error("Cannot load model");
+ osg::ref_ptr<osgDB::Options> readOptions=new osgDB::Options("noRotation");
+ auto model=osgDB::readRefNodeFile(job.at("source").get<std::string>(),readOptions);if(!model)throw std::runtime_error("Cannot load model");
  HWND parent=(HWND)job.at("parent").get<uint64_t>();if(!IsWindow(parent))throw std::runtime_error("Viewer parent closed");
  WNDCLASSW wc{};wc.style=CS_OWNDC;wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandle(nullptr);wc.lpszClassName=L"ShareMeshView";RegisterClassW(&wc);
  RECT r;GetClientRect(parent,&r);int w=std::max(10L,r.right),h=std::max(10L,r.bottom);

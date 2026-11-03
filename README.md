@@ -1,6 +1,14 @@
-# SHARE3DCAM Mesh Studio 1.1 · 模型工作台
+# SHARE3DCAM Mesh Studio 1.1.1 · 模型工作台
 
 SHARE3DCAM 电商销售中心 / SHARE3DCAM E-commerce Sales Center
+
+## 1.1.1 精度修正
+
+OBJ 坐标、UV 和法线写出使用双精度可往返十进制精度（17 位有效数字），裁剪插值属性不再经过 float32 中间转换。对于本组原始 GLB 的 JPEG/PNG 烘焙贴图，正式导出直接复制图片字节，不缩放、不重压缩。裁剪不减面，盒内完整三角形不移动；跨边界三角形必须产生新顶点和新三角形，切口不封口。
+
+工具栏新增“OBJ 原图复核 / Review OBJ”：选择 OBJ 后，可直接调用独立 OBJ 读取器加载 OBJ/MTL 与原始分辨率贴图，跳过 512 px 预览缓存。原图查看会占用更多显存。也可使用 `MeshConverter.exe --review-obj "D:\data\Model.obj"`。
+
+“无损”不表示跨格式逐字节相同：OBJ 无法表达完整 glTF PBR、LOD 树；本组基础色烘焙模型的保真程度以输出目录中的逐项校验报告为准。OSGB 的渲染顶点仍使用 OSG 常规 float32，本项双精度写出保证针对 OBJ。
 
 ## 1.1 新增 / What's new
 
