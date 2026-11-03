@@ -6,3 +6,4 @@ validation/
 __pycache__/
 !package.spec
 *.log
+crash_*.txt
