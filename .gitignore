@@ -4,5 +4,5 @@ build/
 dist/
 validation/
 __pycache__/
-*.spec
+!package.spec
 *.log
