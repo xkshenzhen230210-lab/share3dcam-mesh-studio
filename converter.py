@@ -1,0 +1,241 @@
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+import numpy as np
+from gltf import Glb
+from tiles import Tile, flatten, load_tiles, obj_nodes
+
+RUNTIME=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'runtime'
+
+
+class Cancelled(Exception):pass
+
+
+def write_json(path, value):
+    path=Path(path);temp=path.with_suffix(path.suffix+'.tmp')
+    temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(path)
+
+
+class Control:
+    def __init__(self, callback=None, event=None):
+        self.callback=callback or (lambda message,percent:print(f'{percent:5.1f}% {message}',flush=True))
+        self.event=event or threading.Event()
+    def check(self):
+        if self.event.is_set():raise Cancelled('用户已取消；保留未完成目录供检查')
+    def log(self,text,percent=0):self.check();self.callback(text,percent)
+    def run(self,command,cwd):
+        self.check()
+        env=os.environ.copy();env['OSG_LIBRARY_PATH']=str(RUNTIME/'osgPlugins-3.6.5')
+        env['PATH']=str(RUNTIME)+os.pathsep+env.get('PATH','')
+        # A file avoids pipe deadlocks while preserving diagnostics from native tools.
+        with tempfile.TemporaryFile() as output:
+            p=subprocess.Popen([str(x) for x in command],cwd=cwd,env=env,stdout=output,stderr=subprocess.STDOUT,
+                               creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            while p.poll() is None:
+                if self.event.wait(.1):
+                    p.kill();p.wait();self.check()
+            output.seek(0);text=output.read().decode('utf-8',errors='replace')
+            if p.returncode:raise RuntimeError(f'{Path(command[0]).name} 失败 ({p.returncode}): {text[-4000:]}')
+            return text
+
+
+class ObjWriter:
+    def __init__(self,folder):
+        self.folder=folder;folder.mkdir(parents=True)
+        self.obj=(folder/'Model.obj').open('w',encoding='utf-8',buffering=1024*1024)
+        self.mtl=(folder/'Model.mtl').open('w',encoding='utf-8')
+        self.obj.write('# Z-up local coordinates; units: metres; see metadata.xml\nmtllib Model.mtl\n')
+        self.v=0;self.vt=0;self.vn=0;self.materials=set();self.faces=0
+    def close(self):self.obj.close();self.mtl.close()
+    def add(self,part,texture,name,group):
+        xyz=part['positions'];uv=part['uv'];normal=part['normals'];idx=part['indices']
+        if name not in self.materials:
+            self.materials.add(name);c=part['color']
+            self.mtl.write(f'newmtl {name}\nKa 1 1 1\nKd {c[0]} {c[1]} {c[2]}\nd {c[3]}\nillum 1\n')
+            if texture:self.mtl.write(f'map_Kd {texture}\n')
+            self.mtl.write('\n')
+        self.obj.write(f'\ng {group}\nusemtl {name}\n')
+        np.savetxt(self.obj,xyz,fmt='v %.9g %.9g %.9g')
+        if uv is not None:np.savetxt(self.obj,uv,fmt='vt %.9g %.9g')
+        if normal is not None:np.savetxt(self.obj,normal,fmt='vn %.9g %.9g %.9g')
+        # Write bounded batches; each stream has its own global index offset.
+        for start in range(0,len(idx),20000):
+            a=idx[start:start+20000].astype(np.int64)
+            if uv is not None and normal is not None:
+                out=np.stack([a+self.v+1,a+self.vt+1,a+self.vn+1],axis=2).reshape(-1,9)
+                fmt='f %d/%d/%d %d/%d/%d %d/%d/%d'
+            elif uv is not None:
+                out=np.stack([a+self.v+1,a+self.vt+1],axis=2).reshape(-1,6);fmt='f %d/%d %d/%d %d/%d'
+            elif normal is not None:
+                out=np.stack([a+self.v+1,a+self.vn+1],axis=2).reshape(-1,6);fmt='f %d//%d %d//%d %d//%d'
+            else:out=a+self.v+1;fmt='f %d %d %d'
+            np.savetxt(self.obj,out,fmt=fmt)
+        self.v+=len(xyz);self.vt+=len(uv) if uv is not None else 0;self.vn+=len(normal) if normal is not None else 0;self.faces+=len(idx)
+
+
+def input_tree(path):
+    path=Path(path).resolve()
+    if path.is_dir():
+        for candidate in ['tileset.json','3dtiles/tileset.json','Model.glb','glb/Model.glb']:
+            if (path/candidate).is_file():path=path/candidate;break
+        else:
+            glbs=sorted(path.rglob('*.glb'))
+            if not glbs:raise ValueError('目录中未找到 tileset.json 或 GLB')
+            return glb_tree(glbs),path,'glb'
+    if not path.is_file():raise FileNotFoundError(f'输入不存在: {path}')
+    if path.suffix.lower()=='.json':return load_tiles(path),path,'3dtiles'
+    if path.suffix.lower() in ('.glb','.b3dm'):return glb_tree([path]),path,'glb'
+    raise ValueError('请选择 GLB、tileset.json 或它们所在的目录')
+
+
+def glb_tree(paths):
+    root=Tile(Path('Model.osgb'))
+    for i,path in enumerate(paths):
+        block=Tile(Path(f'Block_{i}/Block_{i}.osgb'));root.children.append(block)
+        with Glb(path) as glb:
+            for node,mesh,_ in glb.instances():
+                count=len(glb.doc['meshes'][mesh]['primitives'])
+                for start in range(0,count,8):
+                    block.children.append(Tile(Path(f'Block_{i}/Block_{i}_Node{node}_Part{start//8}.osgb'),
+                                               path,instance=node,chunk=(start,min(start+8,count))))
+    return root
+
+
+def metadata(input_path):
+    folder=input_path if input_path.is_dir() else input_path.parent
+    candidates=[folder/'metadata.xml',folder.parent/'glb/metadata.xml',folder.parent/'osgb/metadata.xml']
+    for p in candidates:
+        if p.is_file():return p.read_bytes()
+    return b'<?xml version="1.0" encoding="UTF-8"?>\n<ModelMetadata version="1.0"><SRS>LOCAL</SRS><SRSOrigin>0, 0, 0</SRSOrigin></ModelMetadata>\n'
+
+
+def convert(input_path,output_path,formats='both',control=None):
+    control=control or Control();started=time.time()
+    if formats not in ('obj','osgb','both'):raise ValueError('无效输出格式')
+    control.log('分析输入结构、坐标和文件引用…')
+    tree,source,kind=input_tree(input_path)
+    output=Path(output_path).resolve();input_base=source if source.is_dir() else source.parent
+    if output==input_base or output in input_base.parents or output.is_relative_to(input_base):
+        raise ValueError('输出目录必须独立于输入目录，避免覆盖或混入原数据')
+    if output.exists() and any(output.iterdir()):raise ValueError('输出目录不是空目录，请选择新目录')
+    all_nodes=list(flatten(tree));selected=set(obj_nodes(tree));want_obj=formats in ('obj','both');want_osg=formats in ('osgb','both')
+    if want_osg and not (RUNTIME/'mesh_writer.exe').is_file():raise RuntimeError('缺少内置 OSGB 写入器，请运行完整软件包')
+    output.mkdir(parents=True,exist_ok=True)
+    if want_osg:(output/'osgb').mkdir()
+    report={'source':str(source),'input_kind':kind,'formats':formats,'state':'running','nodes':len(all_nodes),
+            'source_contents':sum(n.source is not None for n in all_nodes),'obj_contents':len(selected),
+            'warnings':[],'converted':[],'coordinate_policy':'Z_UP, metres; full transforms applied'}
+    if kind=='glb':report['warnings'].append('GLB 不含 LOD 树：保留源节点分块，生成静态分页 OSGB，不臆造多级细节。')
+    report['warnings'].append('OBJ 是静态最终精度网格；PBR 参数仅映射基础颜色/透明度。')
+    progress_file=output/'mesh_progress.json'
+    obj=None;global_min=np.full(3,np.inf);global_max=-global_min
+    completed=0
+    try:
+        obj=ObjWriter(output/'obj') if want_obj else None
+        with tempfile.TemporaryDirectory(prefix='meshconvert_') as temp:
+            work=Path(temp)
+            # Reverse order ensures child coarse files exist when writing parent LOD pages.
+            for node in reversed(all_nodes):
+                control.check();completed+=1;percent=100*(completed-1)/len(all_nodes)
+                label=str(node.output)
+                if completed==1 or completed%10==0 or node.source:
+                    control.log(f'[{completed}/{len(all_nodes)}] {label}',percent)
+                write_json(progress_file,{'progress':round(percent,2),'state':'running','current':label})
+                do_obj=obj is not None and node in selected
+                if not want_osg and not do_obj:continue
+                primitives=[];textures={};tile_min=np.full(3,np.inf);tile_max=-tile_min
+                for p in work.iterdir():
+                    if p.is_file():p.unlink()
+                buffer=work/'geometry.bin'
+                if node.source:
+                    with Glb(node.source) as glb,buffer.open('wb') as binary:
+                        for part in glb.primitives(node.transform,node.instance,node.chunk):
+                            control.check()
+                            if not len(part['positions']):continue
+                            xyz=part['positions'];tile_min=np.minimum(tile_min,xyz.min(axis=0));tile_max=np.maximum(tile_max,xyz.max(axis=0))
+                            entry={'offset':binary.tell(),'vertices':len(xyz),'indices':part['indices'].size,
+                                   'uv':part['uv'] is not None,'normals':part['normals'] is not None,'color':part['color']}
+                            for key in ['doubleSided','alphaMode','alphaCutoff']:
+                                if key in part['material']:entry[key]=part['material'][key]
+                            texpath=None;digest='plain'
+                            if part['texture'] is not None:
+                                tid=part['texture']
+                                if tid not in textures:
+                                    data,ext,sampler=glb.image(tid);digest=hashlib.sha256(data).hexdigest()[:24]
+                                    texpath=work/(digest+ext);texpath.write_bytes(data)
+                                    if ext=='.ktx2':
+                                        png=texpath.with_suffix('.png')
+                                        control.run([RUNTIME/'ktx.exe','extract','--transcode','rgba8',texpath.name,png.name],work)
+                                        texpath=png
+                                    textures[tid]=(texpath,digest,sampler)
+                                texpath,digest,sampler=textures[tid]
+                                entry['texture']=texpath.name;entry.update({k:v for k,v in sampler.items() if k in ('wrapS','wrapT','minFilter','magFilter')})
+                            if do_obj:
+                                texture_name='tex_'+texpath.name if texpath else None
+                                if texpath and not (obj.folder/texture_name).exists():shutil.copy2(texpath,obj.folder/texture_name)
+                                material_name='mat_'+hashlib.sha256((digest+json.dumps(part['material'],sort_keys=True)).encode()).hexdigest()[:24]
+                                obj.add(part,texture_name,material_name,f'{node.output.stem}_n{part["node"]}_p{part["primitive"]}')
+                                global_min=np.minimum(global_min,xyz.min(axis=0));global_max=np.maximum(global_max,xyz.max(axis=0))
+                            if want_osg:
+                                for key in ('positions','uv','normals','indices'):
+                                    arr=part[key]
+                                    if arr is not None:np.asarray(arr,dtype='<u4' if key=='indices' else '<f4').tofile(binary)
+                                primitives.append(entry)
+                    if np.isfinite(tile_min).all() and kind=='glb':
+                        node.center=((tile_min+tile_max)/2).tolist();node.radius=float(np.linalg.norm(tile_max-tile_min)/2)
+                if node.children and kind=='glb':
+                    lo=np.min([np.array(c.center)-c.radius for c in node.children],axis=0)
+                    hi=np.max([np.array(c.center)+c.radius for c in node.children],axis=0)
+                    node.center=((lo+hi)/2).tolist();node.radius=float(np.linalg.norm(hi-lo)/2)
+                if want_osg:
+                    destination=output/'osgb'/node.output;destination.parent.mkdir(parents=True,exist_ok=True)
+                    child_page=node.output.with_stem(node.output.stem+'_children')
+                    job={'output':'result.osgb','primitives':primitives,'children':[],
+                         'center':node.center,'radius':max(node.radius,.001),'refine':node.refine,
+                         'threshold':max(1,min(1e8,2*node.radius/max(node.error,1e-9)*16)),
+                         'childrenPage':child_page.name,'childrenOutput':'children.osgb'}
+                    if primitives:job['buffer']=buffer.name
+                    for child_index,c in enumerate(node.children):
+                        rel=os.path.relpath(c.output,node.output.parent).replace('\\','/')
+                        child={'path':rel,'center':c.center,'radius':max(c.radius,.001)}
+                        if primitives:
+                            local=f'child_{child_index}.osgb';shutil.copy2(output/'osgb'/c.output,work/local)
+                            child.update(localFile=local,prefix=str(Path(rel).parent).replace('\\','/'))
+                        job['children'].append(child)
+                    write_json(work/'job.json',job)
+                    control.run([RUNTIME/'mesh_writer.exe','write','job.json'],work)
+                    shutil.copy2(work/'result.osgb',destination)
+                    if (work/'children.osgb').is_file():shutil.copy2(work/'children.osgb',output/'osgb'/child_page)
+                report['converted'].append({'output':label,'source':str(node.source) if node.source else None,
+                                            'primitives':len(primitives),'obj':do_obj})
+        if obj:obj.close();report.update(obj_vertices=obj.v,obj_triangles=obj.faces,obj_materials=len(obj.materials));obj=None
+        for fmt in ('obj','osgb'):
+            folder=output/fmt
+            if folder.exists():(folder/'metadata.xml').write_bytes(metadata(source))
+        contract=source.parent/'coordinate_contract.json'
+        if contract.is_file():shutil.copy2(contract,output/'coordinate_contract.json')
+        data={'progress':100}
+        if want_obj:data.update(obj_path='obj',obj_merge_flag=1,obj_model_list=['obj/Model.obj'],obj_material_list=['obj/Model.mtl'])
+        if want_osg:data.update(osgb_path='osgb',osgb_root='osgb/Model.osgb',osgb_model_list=['osgb/Model.osgb'])
+        report.update(state='succeeded',seconds=round(time.time()-started,2))
+        if np.isfinite(global_min).all():report['obj_bounds']=[global_min.tolist(),global_max.tolist()]
+        write_json(output/'conversion_report.json',report)
+        write_json(output/'mesh_result.json',{'code':0,'data':data,'engine_code':0,'error_reason':'','message':'','state':'succeeded','taskState':2})
+        write_json(progress_file,{'progress':100,'state':'succeeded'})
+        control.log(f'转换完成：{output}',100)
+        return report
+    except Exception as e:
+        if obj:obj.close()
+        state='cancelled' if isinstance(e,Cancelled) else 'failed'
+        report.update(state=state,error=str(e),seconds=round(time.time()-started,2))
+        write_json(output/'conversion_report.json',report)
+        write_json(output/'mesh_result.json',{'code':1,'state':state,'error_reason':str(e),'data':{}})
+        write_json(progress_file,{'progress':round(100*completed/len(all_nodes),2),'state':state})
+        raise

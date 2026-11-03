@@ -109,12 +109,13 @@ class Glb:
         roots=self.doc.get('scenes',[{'nodes':list(range(len(nodes)))}])[self.doc.get('scene',0)].get('nodes',[])
         for root in roots:yield from walk(root,np.eye(4),set())
 
-    def primitives(self, transform=None, instance=None):
+    def primitives(self, transform=None, instance=None, chunk=None):
         base=np.eye(4) if transform is None else transform
         for node_id,mesh_id,node_matrix in self.instances():
             if instance is not None and node_id!=instance:continue
             m=base @ self.rtc @ Y_TO_Z @ node_matrix
             for number,p in enumerate(self.doc['meshes'][mesh_id]['primitives']):
+                if chunk is not None and not chunk[0]<=number<chunk[1]:continue
                 if p.get('mode',4)!=4 or p.get('targets') or p.get('extensions'):
                     raise ValueError('只支持未压缩静态三角形 primitive')
                 attrs=p['attributes']; xyz=self.accessor(attrs['POSITION']).astype(float)

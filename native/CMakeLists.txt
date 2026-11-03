@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(mesh_writer LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+add_executable(mesh_writer writer.cpp)
+target_include_directories(mesh_writer PRIVATE "${OSG_ROOT}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../vendor")
+target_link_directories(mesh_writer PRIVATE "${OSG_ROOT}/lib")
+target_link_libraries(mesh_writer PRIVATE osg osgDB OpenThreads)
+target_compile_options(mesh_writer PRIVATE /utf-8)
