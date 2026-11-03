@@ -1,4 +1,34 @@
-# SHARE Mesh 格式转换工具 1.0
+# SHARE3DCAM Mesh Studio 1.1 · 模型工作台
+
+SHARE3DCAM 电商销售中心 / SHARE3DCAM E-commerce Sales Center
+
+## 1.1 新增 / What's new
+
+- 官方 SHARE3DCAM 横版标识，中英双语界面。
+- 集成三维查看器，旋转、平移、滚轮缩放，适应、顶视、正视、右视及线框。
+- 打开这组成果中的 GLB、3D Tiles、OSGB、OBJ、PLY、STL。OSGB 直接分页显示，其余格式首次打开会生成分页缓存。
+- 六面剪切盒：开启后拖动滑块，或输入坐标后按 Enter。点击“导出盒内模型 / Export clipped”真正裁切三角形、插值 UV，并导出 OSGB / OBJ。**切口不自动封口**。
+- 完整转换与盒内导出独立。裁剪使用原始精度数据与原始贴图；缓存预览贴图限制为 512 px，直接打开的 OSGB 使用其原始贴图。
+- OBJ/PLY/STL 和重新导出的 OSGB 生成静态分页结构；3D Tiles 输入保留源层级。
+
+### 查看与裁剪 / View and clip
+
+1. 双击 `MeshConverter.exe`，选择模型文件（3D Tiles 选 `tileset.json`，OSGB 选 `Model.osgb`），点击“打开 / Open”。
+2. 左键旋转、中键平移、滚轮缩放。大模型首次生成缓存时可取消；完成后显示模型。
+3. 勾选“启用六面剪切 / Enable clipping”，调整 X/Y/Z 最小值和最大值。右侧面板可以拖动滚动条，底部有重置按钮。
+4. 指定独立的新输出目录，选择输出格式，点击“导出盒内模型 / Export clipped”。未开启剪切盒时，请使用“转换完整模型 / Export full”。
+
+PLY 支持本组 binary_little_endian 三角网格及逐面 `texcoord` / `texnumber` / `TextureFile`；STL 支持本组 binary STL；OBJ 支持三角面、正负索引、MTL 和基础颜色贴图（不支持 map_Kd 变换选项）。不是所有第三方格式变体都适用。XML、MTL、JPEG、PNG、KTX2、JSON 等辅助文件随模型读取，不作为独立三维模型打开。
+
+Windows 10 1903+ / Windows 11 x64，支持 OpenGL 的显卡。预览缓存位于 `%LOCALAPPDATA%\SHARE3DCAM\MeshStudio\preview`；GLB/STL 可复用缓存，其余格式重新打开会重建缓存。关闭程序后可以手动删除该专用缓存目录。原始输入不会修改。
+
+命令行裁剪示例：
+
+```powershell
+.\MeshConverterCLI.exe --input "D:\data\Model.glb" --output "D:\exports\crop01" --format both --clip -20 -10 -15 -10 0 5
+```
+
+以下为原有转换结构与技术说明，适用于 1.1 的对应功能。
 
 Windows 10/11 x64 本地软件。支持 SHARE 2.7.5 生成的静态 GLB、3D Tiles 1.1（GLB 瓦片），以及经典 b3dm 内嵌 GLB 2.0。
 
@@ -7,8 +37,8 @@ Windows 10/11 x64 本地软件。支持 SHARE 2.7.5 生成的静态 GLB、3D Til
 1. 解压整个软件包，双击 `MeshConverter.exe`。保留同目录 `_internal` 文件夹。
 2. 输入选择 `Model.glb`、`tileset.json`，也可以选数据目录。
 3. 输出选择一个独立的新目录或空目录。
-4. 选择 OSGB + OBJ、仅 OSGB 或仅 OBJ，点击“开始转换”。
-5. 完成后点击“打开输出目录”。读取入口分别为 `osgb/Model.osgb`、`obj/Model.obj`。
+4. 选择 OSGB + OBJ、OSGB 或 OBJ，点击“转换完整模型 / Export full”。
+5. 完成后点击“输出文件夹 / Open output”。读取入口分别为 `osgb/Model.osgb`、`obj/Model.obj`。
 
 输入原始文件只读。大文件建议输出到本地 SSD，至少预留输入大小的 5～10 倍空间；KTX2 转 PNG、OSGB 页的贴图可能明显增大。取消后保留已生成部分和错误状态，重新转换请选新空目录。当前版本不做断点续传。
 
@@ -62,13 +92,12 @@ Windows 10/11 x64 本地软件。支持 SHARE 2.7.5 生成的静态 GLB、3D Til
 
 ## 源码开发
 
-Python 3.12 x64、NumPy、Tkinter；OSGB 与 OBJ 批量写入器为 C++17。大规模 OBJ 文本在独立的原生进程生成，Python 负责分批读取和调度。发行程序自带 Python 和运行库，使用者无需安装开发环境。
+Python 3.12.13 x64、NumPy、Pillow、Tkinter；OSGB 与 OBJ 批量读写器、嵌入式 OpenGL 查看器为 C++17。使用 uv 创建项目独立环境；本机原有 Python 3.12.10 在长时间读取与打包时出现底层异常，因此发行包统一使用已验证的隔离环境。发行程序自带 Python 和运行库，使用者无需安装开发环境。
 
 ```powershell
-python -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File build.ps1
-python -m unittest discover -s tests -v
-python app.py
+.venv-studio\Scripts\python.exe -m unittest discover -s tests -v
+.venv-studio\Scripts\python.exe app.py
 ```
 
 `bootstrap.py` 准备第三方开发依赖，CMake 需要 Visual Studio 2022 C++ Build Tools 和 Windows SDK。源码位置：gltf.py / tiles.py / converter.py / app.py / native/writer.cpp。验证说明见 VALIDATION.md。

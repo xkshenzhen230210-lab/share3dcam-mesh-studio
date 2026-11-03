@@ -1,5 +1,5 @@
 # Build two entry points sharing one portable dependency directory.
-a=Analysis(['app.py'],pathex=[],binaries=[],datas=[('runtime','runtime')],hiddenimports=[],
+a=Analysis(['app.py'],pathex=[],binaries=[],datas=[('runtime','runtime'),('assets','assets')],hiddenimports=[],
            hookspath=[],hooksconfig={},runtime_hooks=[],excludes=[])
 pyz=PYZ(a.pure)
 gui=EXE(pyz,a.scripts,[],exclude_binaries=True,name='MeshConverter',debug=False,

@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 from gltf import Glb
 from tiles import Tile, flatten, load_tiles, obj_nodes
+from formats import reader, mesh_tree
+from clipping import clip_primitive
 
 RUNTIME=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'runtime'
 
@@ -70,7 +72,7 @@ class ObjWriter:
 def input_tree(path):
     path=Path(path).resolve()
     if path.is_dir():
-        for candidate in ['tileset.json','3dtiles/tileset.json','Model.glb','glb/Model.glb']:
+        for candidate in ['tileset.json','3dtiles/tileset.json','Model.glb','glb/Model.glb','Model.osgb','Model.obj','Model.ply','Model.stl']:
             if (path/candidate).is_file():path=path/candidate;break
         else:
             glbs=sorted(path.rglob('*.glb'))
@@ -79,6 +81,7 @@ def input_tree(path):
     if not path.is_file():raise FileNotFoundError(f'输入不存在: {path}')
     if path.suffix.lower()=='.json':return load_tiles(path),path,'3dtiles'
     if path.suffix.lower() in ('.glb','.b3dm'):return glb_tree([path]),path,'glb'
+    if path.suffix.lower() in ('.ply','.stl','.mesh'):return mesh_tree(path),path,path.suffix[1:].lower()
     raise ValueError('请选择 GLB、tileset.json 或它们所在的目录')
 
 
@@ -103,11 +106,34 @@ def metadata(input_path):
     return b'<?xml version="1.0" encoding="UTF-8"?>\n<ModelMetadata version="1.0"><SRS>LOCAL</SRS><SRSOrigin>0, 0, 0</SRSOrigin></ModelMetadata>\n'
 
 
-def convert(input_path,output_path,formats='both',control=None):
+def convert(input_path,output_path,formats='both',control=None,clip_box=None,preview=False):
+    control=control or Control();source=Path(input_path).resolve()
+    if clip_box is not None:
+        clip_box=np.asarray(clip_box,dtype=float)
+        if clip_box.shape!=(6,) or not np.isfinite(clip_box).all() or np.any(clip_box[:3]>=clip_box[3:]):raise ValueError('剪切盒范围无效 / Invalid clipping box')
+    if source.is_dir():
+        for name in ('tileset.json','3dtiles/tileset.json','Model.glb','glb/Model.glb','Model.osgb','Model.obj','Model.ply','Model.stl'):
+            if (source/name).is_file():source=source/name;break
+    if source.suffix.lower() in ('.obj','.osgb'):
+        output=Path(output_path).resolve();base=source.parent
+        if output==base or output in base.parents or output.is_relative_to(base):raise ValueError('输出目录必须独立于输入目录')
+        if output.exists() and any(output.iterdir()):raise ValueError('输出目录不是空目录')
+        with tempfile.TemporaryDirectory(prefix='meshread_') as temp:
+            work=Path(temp);control.log('读取网格、材质与最终精度节点 / Reading mesh and materials…')
+            job={'source':str(source),'output':str(work/'mesh')}
+            if clip_box is not None:job['clipBox']=clip_box.tolist()
+            write_json(work/'read.json',job)
+            control.run([RUNTIME/'mesh_reader.exe','read.json'],work)
+            tree=mesh_tree(work/'mesh/model.mesh')
+            return _convert(source,output_path,formats,control,clip_box,preview,(tree,source,source.suffix[1:]))
+    return _convert(source,output_path,formats,control,clip_box,preview)
+
+
+def _convert(input_path,output_path,formats='both',control=None,clip_box=None,preview=False,prepared=None):
     control=control or Control();started=time.time()
     if formats not in ('obj','osgb','both'):raise ValueError('无效输出格式')
     control.log('分析输入结构、坐标和文件引用…')
-    tree,source,kind=input_tree(input_path)
+    tree,source,kind=prepared or input_tree(input_path)
     output=Path(output_path).resolve();input_base=source if source.is_dir() else source.parent
     if output==input_base or output in input_base.parents or output.is_relative_to(input_base):
         raise ValueError('输出目录必须独立于输入目录，避免覆盖或混入原数据')
@@ -123,7 +149,9 @@ def convert(input_path,output_path,formats='both',control=None):
     report['warnings'].append('OBJ 是静态最终精度网格；PBR 参数仅映射基础颜色/透明度。')
     progress_file=output/'mesh_progress.json'
     obj=None;global_min=np.full(3,np.inf);global_max=-global_min
-    completed=0
+    completed=0;geometry_count=0;empty_nodes=set()
+    report['clip_box']=list(clip_box) if clip_box is not None else None
+    report['preview_textures']=preview
     try:
         obj=ObjWriter(output/'obj') if want_obj else None
         with tempfile.TemporaryDirectory(prefix='meshconvert_') as temp:
@@ -142,10 +170,12 @@ def convert(input_path,output_path,formats='both',control=None):
                     if p.is_file():p.unlink()
                 buffer=work/'geometry.bin'
                 if node.source:
-                    with Glb(node.source) as glb,buffer.open('wb') as binary:
+                    with reader(node.source) as glb,buffer.open('wb') as binary:
                         for part in glb.primitives(node.transform,node.instance,node.chunk):
                             control.check()
+                            if clip_box is not None:part=clip_primitive(part,clip_box)
                             if not len(part['positions']):continue
+                            geometry_count+=len(part['indices'])
                             xyz=part['positions'];tile_min=np.minimum(tile_min,xyz.min(axis=0));tile_max=np.maximum(tile_max,xyz.max(axis=0))
                             entry={'offset':binary.tell(),'vertices':len(xyz),'indices':part['indices'].size,
                                    'uv':part['uv'] is not None,'normals':part['normals'] is not None,'color':part['color']}
@@ -161,6 +191,11 @@ def convert(input_path,output_path,formats='both',control=None):
                                         png=texpath.with_suffix('.png')
                                         control.run([RUNTIME/'ktx.exe','extract','--transcode','rgba8',texpath.name,png.name],work)
                                         texpath=png
+                                    if preview:
+                                        from PIL import Image
+                                        with Image.open(texpath) as im:
+                                            if max(im.size)>512:
+                                                im.thumbnail((512,512));im.save(texpath)
                                     textures[tid]=(texpath,digest,sampler)
                                 texpath,digest,sampler=textures[tid]
                                 entry['texture']=texpath.name;entry.update({k:v for k,v in sampler.items() if k in ('wrapS','wrapT','minFilter','magFilter')})
@@ -175,9 +210,12 @@ def convert(input_path,output_path,formats='both',control=None):
                                     arr=part[key]
                                     if arr is not None:np.asarray(arr,dtype='<u4' if key=='indices' else '<f8' if key=='positions' else '<f4').tofile(binary)
                                 primitives.append(entry)
-                    if np.isfinite(tile_min).all() and kind=='glb':
+                    if np.isfinite(tile_min).all() and kind!='3dtiles':
                         node.center=((tile_min+tile_max)/2).tolist();node.radius=float(np.linalg.norm(tile_max-tile_min)/2)
-                if node.children and kind=='glb':
+                node.children=[c for c in node.children if c not in empty_nodes]
+                if not primitives and not node.children:
+                    empty_nodes.add(node);continue
+                if node.children and kind!='3dtiles':
                     lo=np.min([np.array(c.center)-c.radius for c in node.children],axis=0)
                     hi=np.max([np.array(c.center)+c.radius for c in node.children],axis=0)
                     node.center=((lo+hi)/2).tolist();node.radius=float(np.linalg.norm(hi-lo)/2)
@@ -206,6 +244,7 @@ def convert(input_path,output_path,formats='both',control=None):
                     if (work/'children.osgb').is_file():shutil.copy2(work/'children.osgb',output/'osgb'/child_page)
                 report['converted'].append({'output':label,'source':str(node.source) if node.source else None,
                                             'primitives':len(primitives),'obj':do_obj})
+        if not geometry_count or (obj is not None and not obj.faces):raise ValueError('剪切盒内没有最终精度网格 / No final-resolution geometry inside clipping box')
         if obj:obj.close();report.update(obj_vertices=obj.v,obj_triangles=obj.faces,obj_materials=len(obj.materials));obj=None
         for fmt in ('obj','osgb'):
             folder=output/fmt
