@@ -8,6 +8,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from converter import write_json
 from video import camera_at, validate_keyframes
+from video_timing import rescale_duration, playback_keyframes
 
 
 class VideoPanel(ttk.Frame):
@@ -25,6 +26,10 @@ class VideoPanel(ttk.Frame):
         self.position = tk.DoubleVar(value=0)
         self.resolution = tk.StringVar(value='1080p')
         self.fps = tk.StringVar(value='30')
+        self.duration = tk.StringVar(value='0')
+        self.speed = tk.StringVar(value='1x')
+        self.accepted_speed = '1x'
+        self.final_duration = tk.StringVar(value='实际时长 / Final: 0.00 s')
         self.hint = tk.StringVar(value='调整视角后添加关键帧。\nMove the camera, then add a keyframe.')
         ttk.Label(self, text='相机动画 / Camera animation', font=('Microsoft YaHei UI', 12, 'bold')).pack(anchor='w')
         ttk.Label(self, text='16:9 画幅 · 平滑运镜\n16:9 framing · Smooth camera motion', foreground='#536b85').pack(anchor='w', pady=(5, 10))
@@ -52,6 +57,16 @@ class VideoPanel(ttk.Frame):
         self.button(row, '载入 / Load', self.load).pack(side='left', fill='x', expand=True, padx=(5, 0))
         export_area = footer if footer is not None else self
         ttk.Separator(export_area).pack(fill='x', pady=(4, 8))
+        row = ttk.Frame(export_area); row.pack(fill='x', pady=(0, 6))
+        ttk.Label(row, text='时长 / Duration (s)').pack(side='left')
+        duration_entry = ttk.Entry(row, textvariable=self.duration, width=6)
+        duration_entry.pack(side='left', padx=4); self.controls.append(duration_entry)
+        self.button(row, '应用 / Set', self.commit_duration).pack(side='right')
+        row = ttk.Frame(export_area); row.pack(fill='x', pady=(0, 5))
+        ttk.Label(row, text='速度 / Speed').pack(side='left')
+        self.speed_combo = ttk.Combobox(row, textvariable=self.speed, values=['0.25x', '0.5x', '1x', '1.5x', '2x', '4x'], width=8, state='readonly')
+        self.speed_combo.pack(side='right'); self.speed_combo.bind('<<ComboboxSelected>>', self.speed_changed)
+        ttk.Label(export_area, textvariable=self.final_duration, foreground='#536b85').pack(anchor='w', pady=(0, 6))
         row = ttk.Frame(export_area); row.pack(fill='x')
         self.size_combo = ttk.Combobox(row, textvariable=self.resolution, values=['1080p', '4K'], width=9, state='readonly')
         self.size_combo.pack(side='left')
@@ -76,10 +91,38 @@ class VideoPanel(ttk.Frame):
         if active: self.stop()
         disabled = active or self.recording
         for widget in self.controls: widget.configure(state='disabled' if disabled else 'normal')
-        for widget in (self.size_combo, self.fps_combo): widget.configure(state='disabled' if disabled else 'readonly')
+        for widget in (self.size_combo, self.fps_combo, self.speed_combo): widget.configure(state='disabled' if disabled else 'readonly')
 
     def reset(self):
-        self.stop(); self.keys = []; self.seconds.set('0'); self.refresh()
+        self.stop(); self.keys = []; self.seconds.set('0'); self.speed.set('1x'); self.accepted_speed = '1x'; self.refresh()
+
+    def speed_value(self):
+        return float(self.speed.get().removesuffix('x'))
+
+    def commit_duration(self):
+        keys = rescale_duration(self.keys, self.duration.get())
+        playback_keyframes(keys, self.speed_value())
+        self.stop(); self.keys = keys; self.refresh()
+
+    def speed_changed(self, _=None):
+        updated = self.keys
+        try:
+            if len(self.keys) >= 2:
+                updated = rescale_duration(self.keys, self.duration.get())
+                playback_keyframes(updated, self.speed_value())
+        except ValueError as error:
+            self.speed.set(self.accepted_speed)
+            messagebox.showerror('视频 / Video', str(error), parent=self.winfo_toplevel()); return
+        self.keys = updated; self.accepted_speed = self.speed.get(); self.stop(); self.refresh()
+
+    def output_seconds(self):
+        return self.keys[-1]['time'] / self.speed_value() if self.keys else 0
+
+    def playback_keys(self):
+        # Typed duration is applied for Play/Save/Render even without pressing Set.
+        requested = float(self.duration.get())
+        if self.keys and requested != self.keys[-1]['time']: self.commit_duration()
+        return playback_keyframes(self.keys, self.speed_value())
 
     def selected(self):
         selection = self.tree.selection()
@@ -122,30 +165,32 @@ class VideoPanel(ttk.Frame):
 
     def go(self):
         self.stop(); key = self.keys[self.selected()]
-        self.set_camera(key); self.position.set(key['time']); self.update_clock()
+        self.set_camera(key); self.position.set(key['time'] / self.speed_value()); self.update_clock()
 
     def refresh(self):
         self.tree.delete(*self.tree.get_children())
         for i, key in enumerate(self.keys): self.tree.insert('', 'end', iid=str(i), text=f'{i + 1:02d}', values=(f'{key["time"]:g}',))
         duration = self.keys[-1]['time'] if self.keys else 0
-        self.scale.configure(to=max(duration, .01)); self.position.set(0); self.update_clock()
+        self.duration.set(f'{duration:g}')
+        self.scale.configure(to=max(self.output_seconds(), .01)); self.position.set(0); self.update_clock()
         self.hint.set(f'{len(self.keys)} 个关键帧 / keyframes · {duration:g} s\n首帧设为 0 秒；至少添加 2 帧。\nStart at 0 s; add at least 2 keyframes.')
 
     def update_clock(self):
-        duration = self.keys[-1]['time'] if self.keys else 0
+        duration = self.output_seconds()
         self.clock.configure(text=f'{self.position.get():.2f} / {duration:.2f} s')
+        self.final_duration.set(f'实际时长 / Final: {duration:.2f} s')
 
     def seek(self, value):
         if self.is_busy or self.scrubbing: return
         self.stop(); self.update_clock()
-        try: self.set_camera(camera_at(validate_keyframes(self.keys), float(value)))
+        try: self.set_camera(camera_at(playback_keyframes(self.keys, self.speed_value()), float(value)))
         except ValueError: pass
 
     def stop(self):
         if self.play_task is not None: self.after_cancel(self.play_task); self.play_task = None
 
     def play(self):
-        keys = validate_keyframes(self.keys); self.stop()
+        keys = self.playback_keys(); self.stop()
         duration = keys[-1]['time']; start = self.position.get()
         if start >= duration: start = 0
         started = time.monotonic() - start
@@ -157,9 +202,10 @@ class VideoPanel(ttk.Frame):
         tick()
 
     def save(self):
+        self.playback_keys()
         keys = validate_keyframes(self.keys)
         filename = filedialog.asksaveasfilename(parent=self, title='保存相机动画 / Save camera animation', defaultextension='.json', filetypes=[('相机动画 / Camera animation', '*.json')])
-        if filename: write_json(filename, dict(version=1, source=str(self.get_source()), keyframes=keys))
+        if filename: write_json(filename, dict(version=2, source=str(self.get_source()), keyframes=keys, speed=self.speed_value(), resolution=self.resolution.get(), fps=int(self.fps.get())))
 
     def load(self):
         filename = filedialog.askopenfilename(parent=self, title='载入相机动画 / Load camera animation', filetypes=[('相机动画 / Camera animation', '*.json')])
@@ -167,11 +213,16 @@ class VideoPanel(ttk.Frame):
         path = Path(filename)
         if path.stat().st_size > 4_000_000: raise ValueError('动画文件过大 / Animation file is too large')
         data = json.loads(path.read_text(encoding='utf-8'))
-        if data.get('version') != 1: raise ValueError('不支持的动画文件版本 / Unsupported animation version')
+        if data.get('version') not in (1, 2): raise ValueError('不支持的动画文件版本 / Unsupported animation version')
         keys = validate_keyframes(data['keyframes'])
-        self.stop(); self.keys = keys; self.refresh()
+        speed = float(data.get('speed', 1)); playback_keyframes(keys, speed)
+        if speed not in (.25, .5, 1, 1.5, 2, 4): raise ValueError('不支持的播放速度 / Unsupported playback speed')
+        self.stop(); self.keys = keys; self.speed.set(f'{speed:g}x'); self.accepted_speed = self.speed.get()
+        if data.get('resolution') in ('1080p', '4K'): self.resolution.set(data['resolution'])
+        if data.get('fps') in (24, 30, 60): self.fps.set(str(data['fps']))
+        self.refresh()
 
     def render(self):
-        keys = validate_keyframes(self.keys); source = self.get_source(); self.stop()
+        keys = self.playback_keys(); source = self.get_source(); self.stop()
         filename = filedialog.asksaveasfilename(parent=self, title='导出视频 / Render video', initialfile=source.stem + '_camera.mp4', defaultextension='.mp4', filetypes=[('MP4 视频 / MP4 video', '*.mp4')])
         if filename: self.export(filename, keys, self.resolution.get(), int(self.fps.get()))

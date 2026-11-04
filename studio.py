@@ -28,7 +28,7 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.3.0 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.4.0 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -41,7 +41,7 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.3.0\n模型 · 裁剪 · 转换 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.4.0\n模型 · 裁剪 · 转换 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar()
