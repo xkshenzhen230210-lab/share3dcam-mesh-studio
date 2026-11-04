@@ -16,6 +16,8 @@ cmake --build build/native --config Release
 if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
 & $studioPython prepare_runtime.py
 if ($LASTEXITCODE -ne 0) { throw 'Runtime preparation failed' }
+& $studioPython prepare_video_runtime.py
+if ($LASTEXITCODE -ne 0) { throw 'Video runtime preparation failed' }
 & $studioPython -m unittest discover -s tests -v
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
 & $studioPython -m PyInstaller --noconfirm --workpath build/studio package.spec

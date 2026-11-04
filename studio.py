@@ -17,6 +17,8 @@ from tkinter import ttk,filedialog,messagebox
 from converter import Control,Cancelled,write_json,RUNTIME
 from model_paths import resolve_model
 from supervisor import convert_isolated
+from video import render_video
+from video_panel import VideoPanel
 
 MODEL_TYPES=[('三维模型 / 3D models','*.glb *.b3dm *.json *.osgb *.obj *.ply *.stl'),('所有文件 / All files','*.*')]
 
@@ -26,7 +28,7 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.2.1 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.3.0 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -39,7 +41,7 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.2.1\n模型查看 · 裁剪 · 转换',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.3.0\n模型 · 裁剪 · 转换 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar()
@@ -62,20 +64,26 @@ def gui():
     content=ttk.Frame(main);content.pack(fill='both',expand=True)
     left=ttk.Frame(content);left.pack(side='left',fill='both',expand=True)
     toolbar=ttk.Frame(left);toolbar.pack(fill='x',pady=(0,7))
-    def command(view=''):
+    def command(view='',camera=None):
         nonlocal seq
         if not ipc or not bounds:return
         try:b=[float(v.get()) for v in values]
         except (ValueError,tk.TclError):return
         if not all(math.isfinite(x) for x in b) or any(b[i]>=b[i+3] for i in range(3)):return
-        seq+=1;write_json(ipc/'command.json',dict(seq=seq,enabled=enabled.get(),showBox=show_box.get() and enabled.get(),wire=wire.get(),box=b,view=view))
+        video_mode=notebook.select()==str(video_tab)
+        payload=dict(enabled=enabled.get(),showBox=show_box.get() and enabled.get() and not video_mode,wire=wire.get() and not video_mode,box=b,view=view,aspect=16/9 if video_mode else 0)
+        if camera is not None:payload['camera']=camera
+        seq+=1;write_json(ipc/'command.json',dict(payload,seq=seq))
     for label,view in [('适应 / Fit','fit'),('顶视 / Top','top'),('正视 / Front','front'),('右视 / Right','right')]:ttk.Button(toolbar,text=label,command=lambda v=view:command(v)).pack(side='left',padx=(0,5))
     ttk.Checkbutton(toolbar,text='线框 / Wireframe',variable=wire,command=command).pack(side='right')
     viewport=tk.Frame(left,bg='#0e141f',highlightbackground='#23344a',highlightthickness=1);viewport.pack(fill='both',expand=True)
     placeholder=tk.Label(viewport,text='3D MODEL WORKSPACE\n\n打开模型，开始查看与裁剪\nOpen a model to view and clip',bg='#0e141f',fg='#8195af',font=('Microsoft YaHei UI',16),justify='center');placeholder.place(relx=.5,rely=.5,anchor='center')
     side_outer=ttk.Frame(content,padding=(18,0,0,0),width=330);side_outer.pack(side='right',fill='y');side_outer.pack_propagate(False)
-    scroll=ttk.Scrollbar(side_outer);scroll.pack(side='right',fill='y')
-    canvas=tk.Canvas(side_outer,bg='#edf1f7',highlightthickness=0,yscrollcommand=scroll.set);canvas.pack(fill='both',expand=True);scroll.configure(command=canvas.yview)
+    notebook=ttk.Notebook(side_outer);notebook.pack(fill='both',expand=True)
+    clip_tab=ttk.Frame(notebook);video_tab=ttk.Frame(notebook)
+    notebook.add(clip_tab,text='剪切 / Clip');notebook.add(video_tab,text='视频 / Video')
+    scroll=ttk.Scrollbar(clip_tab);scroll.pack(side='right',fill='y')
+    canvas=tk.Canvas(clip_tab,bg='#edf1f7',highlightthickness=0,yscrollcommand=scroll.set);canvas.pack(fill='both',expand=True);scroll.configure(command=canvas.yview)
     side=ttk.Frame(canvas);side_window=canvas.create_window((0,0),window=side,anchor='nw')
     side.bind('<Configure>',lambda e:canvas.configure(scrollregion=canvas.bbox('all')));canvas.bind('<Configure>',lambda e:canvas.itemconfigure(side_window,width=e.width))
     ttk.Label(side,text='剪切盒 / Clipping box',font=('Microsoft YaHei UI',14,'bold')).pack(anchor='w',pady=(0,12))
@@ -114,6 +122,7 @@ def gui():
     def busy(active):
         for button in (file_btn,folder_btn,open_btn,export_btn,entry):button.configure(state='disabled' if active else 'normal')
         crop_btn.configure(state='normal' if not active and loaded_source and bounds else 'disabled');cancel_btn.configure(state='normal' if active else 'disabled')
+        video_panel.set_busy(active)
     def stop_viewer():
         nonlocal viewer,viewer_log,ipc
         if viewer and viewer.poll() is None:viewer.terminate();viewer.wait(timeout=5)
@@ -125,6 +134,7 @@ def gui():
             shutil.rmtree(ipc,ignore_errors=True);ipc=None
     def start_viewer(path,original):
         nonlocal viewer,viewer_log,ipc,loaded_source,state_read,bounds
+        if original!=loaded_source:video_panel.reset()
         stop_viewer();bounds=None;enabled.set(False);loaded_source=original;state_read=False
         ipc=Path(tempfile.mkdtemp(prefix='share_view_'));root.update_idletasks()
         write_json(ipc/'job.json',{'source':str(path),'parent':viewport.winfo_id()})
@@ -160,6 +170,44 @@ def gui():
                 path=folder/'osgb/Model.osgb'
             control.check();events.put(('viewer',(path,src),100))
         launch(task)
+    def current_source():
+        if not loaded_source or not bounds or not viewer or viewer.poll() is not None:
+            raise ValueError('请先打开模型 / Open a model first')
+        return loaded_source
+    def current_camera(done):
+        current_source()
+        requested=seq;folder=ipc;deadline=time.monotonic()+2
+        baseline=(folder/'state.json').stat().st_mtime_ns
+        def capture():
+            if closing:return
+            if ipc!=folder or not viewer or viewer.poll() is not None:
+                done(None,ValueError('模型已切换或关闭 / Model changed or closed'));return
+            try:
+                state=json.loads((folder/'state.json').read_text(encoding='utf-8'))
+                if (folder/'state.json').stat().st_mtime_ns!=baseline and state.get('applied_seq',-1)>=requested and 'camera' in state:
+                    done(state['camera']);return
+            except (OSError,ValueError):pass
+            if time.monotonic()>deadline:
+                done(None,ValueError('相机未响应，请稍后重试 / Camera did not respond; please retry'));return
+            root.after(30,capture)
+        root.after(30,capture)
+    def export_video(filename,keys,resolution,fps):
+        src=current_source();box=[float(v.get()) for v in values] if enabled.get() else None
+        def task(control):
+            report=render_video(src,filename,keys,resolution,fps,control,clip_box=box)
+            events.put(('done',f'视频已导出并自动检查 / Video rendered and verified · {resolution} · {filename}',100))
+        launch(task)
+    video_footer=ttk.Frame(video_tab,padding=(10,0,10,6));video_footer.pack(side='bottom',fill='x')
+    video_body=ttk.Frame(video_tab);video_body.pack(fill='both',expand=True)
+    video_scroll=ttk.Scrollbar(video_body);video_scroll.pack(side='right',fill='y')
+    video_canvas=tk.Canvas(video_body,bg='#edf1f7',highlightthickness=0,yscrollcommand=video_scroll.set);video_canvas.pack(fill='both',expand=True);video_scroll.configure(command=video_canvas.yview)
+    video_panel=VideoPanel(video_canvas,current_camera,lambda camera:command(camera=camera),current_source,export_video,footer=video_footer)
+    video_window=video_canvas.create_window((0,0),window=video_panel,anchor='nw')
+    video_panel.bind('<Configure>',lambda e:video_canvas.configure(scrollregion=video_canvas.bbox('all')))
+    video_canvas.bind('<Configure>',lambda e:video_canvas.itemconfigure(video_window,width=e.width))
+    def switch_tools(_=None):
+        video_panel.stop();command()
+    notebook.bind('<<NotebookTabChanged>>',switch_tools)
     def export_model(crop):
         try:
             src=resolve_source(source.get());dst=target.get().strip().strip('"')
@@ -204,7 +252,7 @@ def gui():
         root.after(150,poll)
     def close():
         nonlocal closing
-        closing=True;cancel.set();status.set('正在结束任务 / Stopping…')
+        closing=True;video_panel.stop();cancel.set();status.set('正在结束任务 / Stopping…')
     root.protocol('WM_DELETE_WINDOW',close)
     sample=Path(r'V:\给泽强\2.7版本\mesh\2.7.5新\藏经阁\osgb\Model.osgb')
     if sample.is_file():suggest(str(sample))
