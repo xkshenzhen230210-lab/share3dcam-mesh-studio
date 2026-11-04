@@ -28,7 +28,7 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.5.0 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.5.1 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -41,10 +41,10 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.5.0\n网格 · 点云 · 高斯 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.5.1\n网格 · 点云 · 高斯 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
-    progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar();navigation_speed=tk.StringVar(value='1.5')
+    progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar();navigation_speed=tk.StringVar(value='1.5');mouse_sensitivity=tk.StringVar(value='1.0')
     events=queue.Queue();cancel=threading.Event();worker=None;viewer=None;viewer_log=None;ipc=None;loaded_source=None;bounds=None;seq=0;state_read=False;closing=False;pending=None
     line=ttk.Frame(main);line.pack(fill='x');ttk.Label(line,text='模型 / Model',font=('Microsoft YaHei UI',10,'bold')).pack(side='left',padx=(0,12))
     entry=ttk.Entry(line,textvariable=source);entry.pack(side='left',fill='x',expand=True)
@@ -60,7 +60,11 @@ def gui():
     file_btn=ttk.Button(line,text='文件 / File',command=choose_file);file_btn.pack(side='left',padx=5)
     folder_btn=ttk.Button(line,text='文件夹 / Folder',command=choose_folder);folder_btn.pack(side='left')
     open_btn=ttk.Button(line,text='打开 / Open',style='Accent.TButton');open_btn.pack(side='left',padx=(8,0))
-    ttk.Label(main,text='GLB · 3D Tiles · OSGB · OBJ · PLY/3DGS · LAS · STL    |    左键旋转 / Rotate · 中键平移 / Pan · 滚轮缩放 / Zoom',foreground='#536b85').pack(anchor='w',pady=(8,5))
+    ttk.Label(main,text='GLB · 3D Tiles · OSGB · OBJ · PLY/3DGS · LAS · STL',foreground='#536b85').pack(anchor='w',pady=(8,5))
+    mouse_row=ttk.Frame(main);mouse_row.pack(fill='x',pady=(0,5))
+    ttk.Label(mouse_row,text='鼠标 / Mouse    左键环绕 / Orbit · 右键转头 / Look · 中键平移 / Pan · 滚轮缩放 / Zoom',foreground='#536b85').pack(side='left')
+    ttk.Label(mouse_row,text='灵敏度 / Sensitivity').pack(side='left',padx=(18,4))
+    mouse_entry=ttk.Spinbox(mouse_row,from_=.1,to=3.,increment=.1,textvariable=mouse_sensitivity,width=5);mouse_entry.pack(side='left')
     help_row=ttk.Frame(main);help_row.pack(fill='x',pady=(0,7))
     ttk.Label(help_row,text='点击视图后 WASD 移动 · Q 上升 / Up · E 下降 / Down · Shift 加速 / Fast · Ctrl 慢速 / Slow',foreground='#536b85').pack(side='left')
     ttk.Label(help_row,text='移动速度 / Speed (单位/s)').pack(side='left',padx=(18,4))
@@ -77,11 +81,16 @@ def gui():
         video_mode=notebook.select()==str(video_tab)
         try:speed=float(navigation_speed.get())
         except ValueError:speed=1.5
-        payload=dict(enabled=enabled.get(),showBox=show_box.get() and enabled.get() and not video_mode,wire=wire.get() and not video_mode,box=b,view=view,aspect=16/9 if video_mode else 0,navigation_speed=speed if math.isfinite(speed) and speed>0 else 1.5)
+        try:sensitivity=float(mouse_sensitivity.get())
+        except ValueError:sensitivity=1.
+        if not math.isfinite(sensitivity) or not .1<=sensitivity<=3.:sensitivity=1.
+        mouse_sensitivity.set(f'{sensitivity:g}')
+        payload=dict(enabled=enabled.get(),showBox=show_box.get() and enabled.get() and not video_mode,wire=wire.get() and not video_mode,box=b,view=view,aspect=16/9 if video_mode else 0,navigation_speed=speed if math.isfinite(speed) and speed>0 else 1.5,mouse_sensitivity=sensitivity)
         if camera is not None:payload['camera']=camera
         if move is not None:payload['move']=move
         seq+=1;write_json(ipc/'command.json',dict(payload,seq=seq))
     move_entry.configure(command=command);move_entry.bind('<Return>',lambda _:command());move_entry.bind('<FocusOut>',lambda _:command())
+    mouse_entry.configure(command=command);mouse_entry.bind('<Return>',lambda _:command());mouse_entry.bind('<FocusOut>',lambda _:command())
     def navigation_key(event):
         if not viewer or viewer.poll() is not None:return
         focused=root.focus_get()
@@ -91,6 +100,12 @@ def gui():
             multiplier=(3 if event.state&1 else 1)*(.2 if event.state&4 else 1)
             command(move=[v*multiplier for v in direction]);return 'break'
     root.bind('<KeyPress>',navigation_key)
+    def focus_editor(event):
+        # The renderer owns a child HWND in another process. Explicitly reclaim
+        # Windows focus when clicking an editor after navigating in that child.
+        if event.widget.winfo_class() in ('Entry','TEntry','Spinbox','TSpinbox','Text','TCombobox'):
+            event.widget.focus_force()
+    root.bind('<ButtonPress-1>',focus_editor)
     for label,view in [('适应 / Fit','fit'),('顶视 / Top','top'),('正视 / Front','front'),('右视 / Right','right')]:ttk.Button(toolbar,text=label,command=lambda v=view:command(v)).pack(side='left',padx=(0,5))
     ttk.Checkbutton(toolbar,text='线框 / Wireframe',variable=wire,command=command).pack(side='right')
     viewport=tk.Frame(left,bg='#0e141f',highlightbackground='#23344a',highlightthickness=1);viewport.pack(fill='both',expand=True)
