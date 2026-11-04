@@ -1,0 +1,8 @@
+SHARE3DCAM Mesh Studio invokes the unmodified FFmpeg and ffprobe executables as separate processes.
+FFmpeg project: https://ffmpeg.org/
+Official command documentation: https://ffmpeg.org/ffmpeg.html
+Raw RGB input: https://ffmpeg.org/ffmpeg-formats.html#rawvideo
+Vertical flip: https://ffmpeg.org/ffmpeg-filters.html#vflip
+Build distributor: https://www.gyan.dev/ffmpeg/builds/
+Version, source commit, license and build configuration are preserved in README.txt and build-info.txt.
+These executables are distributed under the license in LICENSE; they remain replaceable by compatible builds.
