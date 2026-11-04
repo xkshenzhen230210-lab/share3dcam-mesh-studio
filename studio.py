@@ -14,24 +14,19 @@ from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk,filedialog,messagebox
-from converter import Control,Cancelled,convert,write_json,RUNTIME
+from converter import Control,Cancelled,write_json,RUNTIME
+from model_paths import resolve_model
+from supervisor import convert_isolated
 
 MODEL_TYPES=[('三维模型 / 3D models','*.glb *.b3dm *.json *.osgb *.obj *.ply *.stl'),('所有文件 / All files','*.*')]
 
 
 def resolve_source(value):
-    p=Path(value.strip().strip('"')).resolve()
-    if p.is_dir():
-        for name in ('tileset.json','Model.osgb','Model.glb','Model.obj','Model.ply','Model.stl','osgb/Model.osgb','3dtiles/tileset.json','glb/Model.glb'):
-            if (p/name).is_file():return p/name
-        raise ValueError('目录中未找到模型入口 / No model entry found')
-    if not p.is_file():raise ValueError('模型路径不存在 / Model not found')
-    if p.suffix.lower() not in ('.glb','.b3dm','.json','.osgb','.obj','.ply','.stl'):raise ValueError('不支持此文件格式 / Unsupported file format')
-    return p
+    return resolve_model(value)
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.2.0 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.2.1 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -44,7 +39,7 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.2.0\n模型查看 · 裁剪 · 转换',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.2.1\n模型查看 · 裁剪 · 转换',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar()
@@ -148,7 +143,8 @@ def gui():
         worker=threading.Thread(target=work,daemon=True);worker.start()
     def open_model():
         try:src=resolve_source(source.get())
-        except Exception as e:messagebox.showerror('打开失败 / Open failed',str(e));return
+        except Exception as e:
+            status.set('打开失败 / Open failed: '+str(e));messagebox.showerror('打开失败 / Open failed',str(e));return
         def task(control):
             if src.suffix.lower()=='.osgb':path=src
             else:
@@ -160,7 +156,7 @@ def gui():
                 if not (folder/'mesh_result.json').is_file() or json.loads((folder/'mesh_result.json').read_text(encoding='utf-8')).get('state')!='succeeded':
                     if folder.exists():folder=cache/(token+'_'+str(time.time_ns()))
                     control.log('准备分页预览缓存 / Preparing paged preview cache…')
-                    convert(src,folder,'osgb',control,preview=True)
+                    convert_isolated(src,folder,'osgb',control,preview=True)
                 path=folder/'osgb/Model.osgb'
             control.check();events.put(('viewer',(path,src),100))
         launch(task)
@@ -177,7 +173,7 @@ def gui():
         except Exception as e:messagebox.showerror('无法导出 / Cannot export',str(e));return
         mode={'OSGB + OBJ':'both','OSGB':'osgb','OBJ':'obj'}[fmt.get()]
         def task(control):
-            report=convert(src,dst,mode,control,clip_box=box)
+            report=convert_isolated(src,dst,mode,control,clip_box=box)
             result='导出完成，检查通过 / Export complete, checks passed' if report.get('quality',{}).get('state')=='passed' else '导出完成 / Export complete'
             events.put(('done',f'{result} · {report["seconds"]:.1f} s · {dst}',100))
         launch(task)

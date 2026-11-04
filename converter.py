@@ -14,6 +14,7 @@ from tiles import Tile, flatten, load_tiles, obj_nodes
 from formats import reader, mesh_tree
 from clipping import clip_primitive
 from quality import ExportQuality
+from model_paths import resolve_model
 
 RUNTIME=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'runtime'
 
@@ -23,7 +24,13 @@ class Cancelled(Exception):pass
 
 def write_json(path, value):
     path=Path(path);temp=path.with_suffix(path.suffix+'.tmp')
-    temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(path)
+    temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
+    # Windows readers may briefly hold the destination without delete sharing.
+    for attempt in range(8):
+        try:temp.replace(path);return
+        except PermissionError:
+            if attempt==7:raise
+            time.sleep(.025*(attempt+1))
 
 
 class Control:
@@ -73,7 +80,7 @@ class ObjWriter:
 
 
 def input_tree(path):
-    path=Path(path).resolve()
+    path=resolve_model(path,allow_glb_collection=True)
     if path.is_dir():
         for candidate in ['tileset.json','3dtiles/tileset.json','Model.glb','glb/Model.glb','Model.osgb','Model.obj','Model.ply','Model.stl']:
             if (path/candidate).is_file():path=path/candidate;break
@@ -110,7 +117,7 @@ def metadata(input_path):
 
 
 def convert(input_path,output_path,formats='both',control=None,clip_box=None,preview=False):
-    control=control or Control();source=Path(input_path).resolve()
+    control=control or Control();source=resolve_model(input_path,allow_glb_collection=True)
     if clip_box is not None:
         clip_box=np.asarray(clip_box,dtype=float)
         if clip_box.shape!=(6,) or not np.isfinite(clip_box).all() or np.any(clip_box[:3]>=clip_box[3:]):raise ValueError('剪切盒范围无效 / Invalid clipping box')
@@ -155,6 +162,7 @@ def _convert(input_path,output_path,formats='both',control=None,clip_box=None,pr
     completed=0;geometry_count=0;empty_nodes=set()
     report['clip_box']=list(clip_box) if clip_box is not None else None
     report['preview_textures']=preview
+    write_json(output/'conversion_report.json',report)
     try:
         quality=ExportQuality(control) if want_obj and not preview else None
         obj=ObjWriter(output/'obj',quality) if want_obj else None
