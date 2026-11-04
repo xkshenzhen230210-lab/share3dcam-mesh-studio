@@ -63,7 +63,10 @@ int main(int argc,char**argv){try{
  osgViewer::Viewer viewer;viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);viewer.getCamera()->setGraphicsContext(gc);viewer.getCamera()->setViewport(0,0,w,h);viewer.getCamera()->setProjectionMatrixAsPerspective(35.,double(w)/h,.01,100000.);viewer.getCamera()->setClearColor(osg::Vec4(.055,.08,.12,1));
  auto scene=new osg::Group;auto clip=new osg::ClipNode;clip->addChild(model);scene->addChild(clip);
  auto box=new osg::Geode;auto geom=new osg::Geometry;auto vertices=new osg::Vec3Array(24);geom->setVertexArray(vertices);geom->addPrimitiveSet(new osg::DrawArrays(GL_LINES,0,24));auto colors=new osg::Vec4Array;colors->push_back(osg::Vec4(1,.52,.18,1));geom->setColorArray(colors,osg::Array::BIND_OVERALL);box->addDrawable(geom);box->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);box->getOrCreateStateSet()->setAttribute(new osg::LineWidth(2));scene->addChild(box);box->setNodeMask(0);
- auto manip=new osgGA::TrackballManipulator;viewer.setCameraManipulator(manip);viewer.setSceneData(scene);viewer.realize();viewer.home();
+ auto manip=new osgGA::TrackballManipulator;
+ // Match desktop modeling tools: wheel forward zooms in, backward zooms out.
+ manip->setWheelZoomFactor(-manip->getWheelZoomFactor());
+ viewer.setCameraManipulator(manip);viewer.setSceneData(scene);viewer.realize();viewer.home();
  CoarseBounds bounds(fs::u8path(job.at("source").get<std::string>()).parent_path());model->accept(bounds);auto bb=bounds.getBoundingBox();auto sphere=model->getBound();
  if(bb.valid())sphere=osg::BoundingSphere(bb);
  json lohi;if(bb.valid())lohi={bb.xMin(),bb.yMin(),bb.zMin(),bb.xMax(),bb.yMax(),bb.zMax()};else lohi={sphere.center().x()-sphere.radius(),sphere.center().y()-sphere.radius(),sphere.center().z()-sphere.radius(),sphere.center().x()+sphere.radius(),sphere.center().y()+sphere.radius(),sphere.center().z()+sphere.radius()};

@@ -1,6 +1,10 @@
-# SHARE3DCAM Mesh Studio 1.1.1 · 模型工作台
+# SHARE3DCAM Mesh Studio 1.1.2 · 模型工作台
 
 SHARE3DCAM 电商销售中心 / SHARE3DCAM E-commerce Sales Center
+
+## 1.1.2 滚轮方向修正
+
+普通模型预览与 OBJ 原图复核统一使用：滚轮向前／向上滚动放大，向后／向下滚动缩小。
 
 ## 1.1.1 精度修正
 

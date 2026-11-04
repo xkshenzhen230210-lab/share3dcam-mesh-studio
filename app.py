@@ -7,7 +7,7 @@ from tiles import flatten, obj_nodes
 
 
 def main():
-    parser=argparse.ArgumentParser(description='SHARE3DCAM Mesh Studio 1.1.1: GLB/Tiles/OSGB/OBJ/PLY/STL to OSGB/OBJ')
+    parser=argparse.ArgumentParser(description='SHARE3DCAM Mesh Studio 1.1.2: GLB/Tiles/OSGB/OBJ/PLY/STL to OSGB/OBJ')
     parser.add_argument('--input');parser.add_argument('--output');parser.add_argument('--format',choices=['both','obj','osgb'],default='both')
     parser.add_argument('--inspect',action='store_true',help='只分析输入结构')
     parser.add_argument('--review-obj',help='直接读取 OBJ 原图复核 / Review OBJ with original-resolution textures')
