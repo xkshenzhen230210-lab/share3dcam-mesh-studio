@@ -2,10 +2,10 @@
 import json
 from pathlib import Path
 
-MODEL_SUFFIXES={'.glb','.b3dm','.json','.osgb','.obj','.ply','.stl','.mesh'}
-ENTRIES=('tileset.json','Model.osgb','Model.glb','Model.obj','Model.ply','Model.stl',
+MODEL_SUFFIXES={'.glb','.b3dm','.json','.osgb','.obj','.ply','.stl','.mesh','.las'}
+ENTRIES=('tileset.json','Model.osgb','Model.glb','Model.obj','Model.ply','Model.stl','Model.las',
          'osgb/Model.osgb','3dtiles/tileset.json','glb/Model.glb','obj/Model.obj',
-         'ply/Model.ply','stl/Model.stl')
+         'ply/Model.ply','stl/Model.stl','las/Model.las')
 
 
 def check_export_state(path):

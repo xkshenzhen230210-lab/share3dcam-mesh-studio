@@ -165,7 +165,17 @@ def render_video(source,output,keys,resolution='1080p',fps=30,control=None,clip_
     with tempfile.TemporaryDirectory(prefix='share_video_model_') as model_work, \
          tempfile.TemporaryDirectory(prefix='.share_video_',dir=output.parent) as video_work:
         work=Path(video_work);prepared=source
-        if source.suffix.lower()!='.osgb':
+        from point_data import is_point_source
+        if is_point_source(source):
+            control.log('准备完整精度点云／高斯 / Preparing full-resolution points and Gaussians',0)
+            stage=Control(lambda message,percent:control.log(message,percent*.35),control.event)
+            point_source=source
+            if clip_box is not None:
+                cropped=convert_isolated(source,Path(model_work)/'cropped','source',stage,clip_box=clip_box)
+                point_source=Path(cropped['output'])
+            convert_isolated(point_source,Path(model_work)/'points','pointcache',stage,preview=False)
+            prepared=Path(model_work)/'points/model.spoints'
+        elif source.suffix.lower()!='.osgb':
             control.log('准备原始精度模型和贴图 / Preparing original-resolution model and textures',0)
             stage=Control(lambda message,percent:control.log(message,percent*.35),control.event)
             convert_isolated(source,Path(model_work)/'model','osgb',stage,preview=False)

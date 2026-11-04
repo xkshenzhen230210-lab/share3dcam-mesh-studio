@@ -8,8 +8,8 @@ from supervisor import convert_isolated,worker_main
 
 
 def main():
-    parser=argparse.ArgumentParser(description='SHARE3DCAM Mesh Studio 1.4.0: Model conversion and keyframe video rendering')
-    parser.add_argument('--input');parser.add_argument('--output');parser.add_argument('--format',choices=['both','obj','osgb'],default='both')
+    parser=argparse.ArgumentParser(description='SHARE3DCAM Mesh Studio 1.5.0: Mesh, point cloud, Gaussian splatting and video')
+    parser.add_argument('--input');parser.add_argument('--output');parser.add_argument('--format',choices=['both','obj','osgb','3dtiles','source'],default='both')
     parser.add_argument('--inspect',action='store_true',help='只分析输入结构')
     parser.add_argument('--worker-job',help=argparse.SUPPRESS)
     parser.add_argument('--clip',type=float,nargs=6,metavar=('XMIN','YMIN','ZMIN','XMAX','YMAX','ZMAX'),help='保留剪切盒内模型 / Keep geometry inside box')
@@ -20,6 +20,11 @@ def main():
         studio_gui();return
     try:
         if args.inspect:
+            from model_paths import resolve_model
+            from point_data import is_point_source,point_info
+            source=resolve_model(args.input)
+            if is_point_source(source):
+                print(json.dumps(point_info(source),ensure_ascii=False,indent=2));return
             tree,source,kind=input_tree(args.input)
             result={'source':str(source),'kind':kind,'nodes':len(list(flatten(tree))),'obj_contents':len(obj_nodes(tree))}
             print(json.dumps(result,ensure_ascii=False,indent=2));return

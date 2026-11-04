@@ -75,7 +75,7 @@ class VideoPanel(ttk.Frame):
         self.fps_combo.pack(side='right')
         self.button(export_area, '导出 MP4 / Render video', self.render, accent=True).pack(fill='x', pady=(8, 4))
         ttk.Label(self, textvariable=self.hint, foreground='#536b85', wraplength=280, justify='left').pack(anchor='w')
-        ttk.Label(self, text='导出使用原始贴图；沿用当前剪切范围。\nOriginal textures; current clipping applies.\n取消导出请点击下方“取消任务”。\nUse Cancel below to stop rendering.', foreground='#536b85', wraplength=280, font=('Microsoft YaHei UI', 9)).pack(anchor='w', pady=(10, 0))
+        ttk.Label(self, text='导出使用原始精度；沿用当前剪切范围。\nOriginal detail; current clipping applies.\n取消导出请点击下方“取消任务”。\nUse Cancel below to stop rendering.', foreground='#536b85', wraplength=280, font=('Microsoft YaHei UI', 9)).pack(anchor='w', pady=(10, 0))
 
     def button(self, parent, text, action, accent=False):
         def invoke():

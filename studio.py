@@ -20,7 +20,7 @@ from supervisor import convert_isolated
 from video import render_video
 from video_panel import VideoPanel
 
-MODEL_TYPES=[('三维模型 / 3D models','*.glb *.b3dm *.json *.osgb *.obj *.ply *.stl'),('所有文件 / All files','*.*')]
+MODEL_TYPES=[('三维模型 / 3D models','*.glb *.b3dm *.json *.osgb *.obj *.ply *.stl *.las'),('所有文件 / All files','*.*')]
 
 
 def resolve_source(value):
@@ -28,7 +28,7 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.4.0 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.5.0 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -41,10 +41,10 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.4.0\n模型 · 裁剪 · 转换 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.5.0\n网格 · 点云 · 高斯 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
-    progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar()
+    progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar();navigation_speed=tk.StringVar(value='1.5')
     events=queue.Queue();cancel=threading.Event();worker=None;viewer=None;viewer_log=None;ipc=None;loaded_source=None;bounds=None;seq=0;state_read=False;closing=False;pending=None
     line=ttk.Frame(main);line.pack(fill='x');ttk.Label(line,text='模型 / Model',font=('Microsoft YaHei UI',10,'bold')).pack(side='left',padx=(0,12))
     entry=ttk.Entry(line,textvariable=source);entry.pack(side='left',fill='x',expand=True)
@@ -60,20 +60,37 @@ def gui():
     file_btn=ttk.Button(line,text='文件 / File',command=choose_file);file_btn.pack(side='left',padx=5)
     folder_btn=ttk.Button(line,text='文件夹 / Folder',command=choose_folder);folder_btn.pack(side='left')
     open_btn=ttk.Button(line,text='打开 / Open',style='Accent.TButton');open_btn.pack(side='left',padx=(8,0))
-    ttk.Label(main,text='GLB  ·  3D Tiles  ·  OSGB  ·  OBJ  ·  PLY  ·  STL     |     左键旋转 / Rotate  ·  中键平移 / Pan  ·  滚轮缩放 / Zoom',foreground='#536b85').pack(anchor='w',pady=(8,10))
+    ttk.Label(main,text='GLB · 3D Tiles · OSGB · OBJ · PLY/3DGS · LAS · STL    |    左键旋转 / Rotate · 中键平移 / Pan · 滚轮缩放 / Zoom',foreground='#536b85').pack(anchor='w',pady=(8,5))
+    help_row=ttk.Frame(main);help_row.pack(fill='x',pady=(0,7))
+    ttk.Label(help_row,text='点击视图后 WASD 移动 · Q 上升 / Up · E 下降 / Down · Shift 加速 / Fast · Ctrl 慢速 / Slow',foreground='#536b85').pack(side='left')
+    ttk.Label(help_row,text='移动速度 / Speed (单位/s)').pack(side='left',padx=(18,4))
+    move_entry=ttk.Spinbox(help_row,from_=.01,to=100000,increment=.5,textvariable=navigation_speed,width=7);move_entry.pack(side='left')
     content=ttk.Frame(main);content.pack(fill='both',expand=True)
     left=ttk.Frame(content);left.pack(side='left',fill='both',expand=True)
     toolbar=ttk.Frame(left);toolbar.pack(fill='x',pady=(0,7))
-    def command(view='',camera=None):
+    def command(view='',camera=None,move=None):
         nonlocal seq
         if not ipc or not bounds:return
         try:b=[float(v.get()) for v in values]
         except (ValueError,tk.TclError):return
         if not all(math.isfinite(x) for x in b) or any(b[i]>=b[i+3] for i in range(3)):return
         video_mode=notebook.select()==str(video_tab)
-        payload=dict(enabled=enabled.get(),showBox=show_box.get() and enabled.get() and not video_mode,wire=wire.get() and not video_mode,box=b,view=view,aspect=16/9 if video_mode else 0)
+        try:speed=float(navigation_speed.get())
+        except ValueError:speed=1.5
+        payload=dict(enabled=enabled.get(),showBox=show_box.get() and enabled.get() and not video_mode,wire=wire.get() and not video_mode,box=b,view=view,aspect=16/9 if video_mode else 0,navigation_speed=speed if math.isfinite(speed) and speed>0 else 1.5)
         if camera is not None:payload['camera']=camera
+        if move is not None:payload['move']=move
         seq+=1;write_json(ipc/'command.json',dict(payload,seq=seq))
+    move_entry.configure(command=command);move_entry.bind('<Return>',lambda _:command());move_entry.bind('<FocusOut>',lambda _:command())
+    def navigation_key(event):
+        if not viewer or viewer.poll() is not None:return
+        focused=root.focus_get()
+        if focused is not None and focused.winfo_class() in ('Entry','TEntry','Spinbox','TSpinbox','Text','TCombobox','Treeview'):return
+        direction={'w':[0,1,0],'s':[0,-1,0],'a':[-1,0,0],'d':[1,0,0],'q':[0,0,1],'e':[0,0,-1]}.get(event.keysym.lower())
+        if direction:
+            multiplier=(3 if event.state&1 else 1)*(.2 if event.state&4 else 1)
+            command(move=[v*multiplier for v in direction]);return 'break'
+    root.bind('<KeyPress>',navigation_key)
     for label,view in [('适应 / Fit','fit'),('顶视 / Top','top'),('正视 / Front','front'),('右视 / Right','right')]:ttk.Button(toolbar,text=label,command=lambda v=view:command(v)).pack(side='left',padx=(0,5))
     ttk.Checkbutton(toolbar,text='线框 / Wireframe',variable=wire,command=command).pack(side='right')
     viewport=tk.Frame(left,bg='#0e141f',highlightbackground='#23344a',highlightthickness=1);viewport.pack(fill='both',expand=True)
@@ -107,13 +124,14 @@ def gui():
             for v,b in zip(values,bounds):v.set(round(b,5))
             command()
     ttk.Button(side,text='重置范围 / Reset bounds',command=reset_box).pack(fill='x',pady=(6,10))
-    ttk.Label(side,text='保留盒内部分；切面不自动封口。\nKeep inside; cut surfaces stay open.\n\n单位沿用源模型。缓存贴图 ≤ 512 px。\nSource units. Cached textures ≤ 512 px.\n导出保留原贴图精度。\nExports retain original texture resolution.',foreground='#5b6f87',wraplength=285,justify='left',font=('Microsoft YaHei UI',9)).pack(anchor='w')
+    clip_description=tk.StringVar(value='保留盒内部分；切面不自动封口。\nKeep inside; cut surfaces stay open.\n\n缓存贴图 ≤ 512 px；导出保留原图。\nCached textures ≤ 512 px; exports use originals.')
+    ttk.Label(side,textvariable=clip_description,foreground='#5b6f87',wraplength=285,justify='left',font=('Microsoft YaHei UI',9)).pack(anchor='w')
     export=ttk.Frame(main);export.pack(fill='x',pady=(14,8));ttk.Label(export,text='输出 / Output').pack(side='left',padx=(0,10));target_entry=ttk.Entry(export,textvariable=target);target_entry.pack(side='left',fill='x',expand=True)
     def choose_output():
         p=filedialog.askdirectory(title='选择新的空输出目录 / Select empty output directory')
         if p:target.set(p)
     output_btn=ttk.Button(export,text='浏览 / Browse',command=choose_output);output_btn.pack(side='left',padx=6)
-    combo=ttk.Combobox(export,textvariable=fmt,values=['OSGB + OBJ','OSGB','OBJ'],state='readonly',width=13);combo.pack(side='left')
+    combo=ttk.Combobox(export,textvariable=fmt,values=['OSGB + OBJ','OSGB','OBJ','3D Tiles','原格式 / Source'],state='readonly',width=16);combo.pack(side='left')
     actions=ttk.Frame(main);actions.pack(fill='x');export_btn=ttk.Button(actions,text='转换完整模型 / Export full');export_btn.pack(side='left')
     crop_btn=ttk.Button(actions,text='导出盒内模型 / Export clipped',style='Accent.TButton');crop_btn.pack(side='left',padx=8)
     cancel_btn=ttk.Button(actions,text='取消任务 / Cancel',state='disabled',command=lambda:cancel.set());cancel_btn.pack(side='left')
@@ -138,6 +156,10 @@ def gui():
         stop_viewer();bounds=None;enabled.set(False);loaded_source=original;state_read=False
         ipc=Path(tempfile.mkdtemp(prefix='share_view_'));root.update_idletasks()
         write_json(ipc/'job.json',{'source':str(path),'parent':viewport.winfo_id()})
+        if path.suffix=='.spoints':
+            info=json.loads(path.read_text(encoding='utf-8'))
+            clip_description.set(f'按点／高斯中心保留，边界高斯保持完整。\nKeep centers inside; Gaussians stay intact.\n\n预览 {info["count"]:,} / {info["source_count"]:,} 点\nPreview points; exports use all records.\n原格式裁剪保留全部字段。\nSource-format crop preserves all fields.')
+        else:clip_description.set('保留盒内部分；切面不自动封口。\nKeep inside; cut surfaces stay open.\n\n缓存贴图 ≤ 512 px；导出保留原图。\nCached textures ≤ 512 px; exports use originals.')
         env=os.environ.copy();env['PATH']=str(RUNTIME)+os.pathsep+env.get('PATH','');env['OSG_LIBRARY_PATH']=str(RUNTIME/'osgPlugins-3.6.5')
         viewer_log=(ipc/'viewer.log').open('wb');viewer=subprocess.Popen([str(RUNTIME/'mesh_viewer.exe'),'job.json'],cwd=ipc,env=env,stdout=viewer_log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW)
         placeholder.configure(text='模型显示中 / Starting viewer…');status.set('正在创建模型视图 / Starting 3D view…')
@@ -156,6 +178,8 @@ def gui():
         except Exception as e:
             status.set('打开失败 / Open failed: '+str(e));messagebox.showerror('打开失败 / Open failed',str(e));return
         def task(control):
+            from point_data import is_point_source
+            point_source=is_point_source(src)
             if src.suffix.lower()=='.osgb':path=src
             else:
                 cache=Path(os.environ.get('LOCALAPPDATA',tempfile.gettempdir()))/'SHARE3DCAM/MeshStudio/preview';cache.mkdir(parents=True,exist_ok=True)
@@ -166,8 +190,10 @@ def gui():
                 if not (folder/'mesh_result.json').is_file() or json.loads((folder/'mesh_result.json').read_text(encoding='utf-8')).get('state')!='succeeded':
                     if folder.exists():folder=cache/(token+'_'+str(time.time_ns()))
                     control.log('准备分页预览缓存 / Preparing paged preview cache…')
-                    convert_isolated(src,folder,'osgb',control,preview=True)
-                path=folder/'osgb/Model.osgb'
+                    if point_source:
+                        convert_isolated(src,folder,'pointcache',control,preview=True)
+                    else:convert_isolated(src,folder,'osgb',control,preview=True)
+                path=folder/'model.spoints' if point_source else folder/'osgb/Model.osgb'
             control.check();events.put(('viewer',(path,src),100))
         launch(task)
     def current_source():
@@ -219,7 +245,7 @@ def gui():
                 box=[float(v.get()) for v in values]
                 if not all(math.isfinite(x) for x in box) or any(box[i]>=box[i+3] for i in range(3)):raise ValueError('请输入有效范围，最小值须小于最大值 / Enter finite bounds with Min below Max')
         except Exception as e:messagebox.showerror('无法导出 / Cannot export',str(e));return
-        mode={'OSGB + OBJ':'both','OSGB':'osgb','OBJ':'obj'}[fmt.get()]
+        mode={'OSGB + OBJ':'both','OSGB':'osgb','OBJ':'obj','3D Tiles':'3dtiles','原格式 / Source':'source'}[fmt.get()]
         def task(control):
             report=convert_isolated(src,dst,mode,control,clip_box=box)
             result='导出完成，检查通过 / Export complete, checks passed' if report.get('quality',{}).get('state')=='passed' else '导出完成 / Export complete'
@@ -240,6 +266,10 @@ def gui():
                 state=json.loads((ipc/'state.json').read_text(encoding='utf-8'))
                 if state.get('ready'):
                     state_read=True;bounds=state['bounds']
+                    from point_data import is_point_source
+                    is_points=is_point_source(loaded_source)
+                    if is_points:fmt.set('原格式 / Source')
+                    elif fmt.get()=='原格式 / Source':fmt.set('OSGB + OBJ')
                     for i in range(3):
                         if bounds[i]>=bounds[i+3]:bounds[i]-=.01;bounds[i+3]+=.01
                     for i,slider in enumerate(sliders):slider.configure(from_=bounds[i%3],to=bounds[i%3+3])

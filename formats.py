@@ -58,7 +58,8 @@ class Mesh:
         name=self.doc['textures'][tid] if self.ext=='.mesh' else self.textures[tid]
         p=Path(name)
         if not p.is_absolute():p=self.path.parent/p
-        return p.read_bytes(),p.suffix.lower(),{}
+        samplers=self.doc.get('samplers',[]) if self.ext=='.mesh' else []
+        return p.read_bytes(),p.suffix.lower(),samplers[tid] if tid<len(samplers) else {}
     def primitives(self,transform=None,instance=None,chunk=None):
         start,end=chunk or (0,self.count)
         if self.ext=='.mesh':
@@ -67,7 +68,8 @@ class Mesh:
                 with (self.path.parent/filename).open('rb') as f:
                     xyz=np.fromfile(f,dtype='<f8',count=n*3).reshape(-1,3)
                     uv=np.fromfile(f,dtype='<f4',count=n*2).reshape(-1,2) if p.pop('has_uv') else None
-                yield dict(positions=xyz,indices=np.arange(n,dtype=np.uint32).reshape(-1,3),uv=uv,normals=None,material={},color=p.get('color',[1,1,1,1]),texture=p.get('texture'),node=0,primitive=i)
+                    normals=np.fromfile(f,dtype='<f4',count=n*3).reshape(-1,3) if p.pop('has_normals',False) else None
+                yield dict(positions=xyz,indices=np.arange(n,dtype=np.uint32).reshape(-1,3),uv=uv,normals=normals,material=p.get('material',{}),color=p.get('color',[1,1,1,1]),texture=p.get('texture'),node=0,primitive=i)
             return
         for begin in range(start,end,CHUNK):
             faces=self.faces[begin:min(begin+CHUNK,end)]

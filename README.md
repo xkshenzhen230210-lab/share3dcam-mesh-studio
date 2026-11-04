@@ -1,6 +1,24 @@
-# SHARE3DCAM Mesh Studio 1.4.0 · 模型工作台
+# SHARE3DCAM Mesh Studio 1.5.0 · 模型工作台
 
 SHARE3DCAM 电商销售中心 / SHARE3DCAM E-commerce Sales Center
+
+## 1.5.0 漫游、3D Tiles、点云与高斯 / Navigation, tiles and splats
+
+点击三维视图后使用 **W/S 前后、A/D 左右、Q 上升、E 下降**。W/S 沿相机视线移动，A/D 横移，Q/E 沿模型 Z 轴升降。按住 Shift 以 3× 加速，Ctrl 以 0.2× 慢速；上方“移动速度”以源坐标单位／秒设置。输入框内正常编辑文字，不触发漫游。原有鼠标旋转、平移、滚轮缩放继续可用。
+
+网格输出格式新增 **3D Tiles**。选择此格式后，“转换完整模型”或“导出盒内模型”生成 `3dtiles/tileset.json`、分块目录中的 GLB、坐标元数据与后台验证报告。支持已有 GLB、3D Tiles、OSGB、OBJ 及受支持的网格 PLY/STL；保留基础颜色、透明、UV、纹理与读取器支持的法线。采用 3D Tiles 1.1 和 Y-up GLB 内容，瓦片坐标为 Z-up，以局部中心和双精度平移保留大坐标精度。每个 GLB 读回核对，检查引用和包围体后才发布成功。
+
+这是静态最终精度瓦片集，不自动生成简化 LOD，也不自动地理定位；原有 3D Tiles → OBJ/OSGB 功能继续保留。GLB 顶点与 UV 使用标准 float32，坐标不是 double 逐位无损；原图片不缩小、不重新压缩，KTX2 按原尺寸转 PNG。
+
+**LAS 点云和 PLY 高斯**也可用同一个打开、剪切盒和视频界面：
+
+1. 选择 `.las` 或点／高斯 `.ply`，点击打开。PLY 中有三角面时仍走网格流程，无面的普通点 PLY、标准 Inria SH0–SH3 高斯自动识别。
+2. 预览均匀抽样最多 30 万点，侧栏显示实际预览／原始点数。点云显示 RGB；高斯使用尺度、旋转、透明度、视角相关球谐颜色、各向异性椭圆与深度排序。点／高斯显示需要 OpenGL 3.2 / GLSL 1.50。
+3. 开启剪切盒并设置范围，输出格式自动选择 **原格式 / Source**。点击“导出盒内模型”保存 LAS 或 PLY；选择“转换完整模型”可完整复制原格式。正式裁剪读取全量数据，不使用抽样缓存。
+4. 选中的点记录逐字节保留。LAS 保留点格式、额外字段、scale/offset、VLR/EVLR 和 CRS；高斯保留全部 PLY 字段。**高斯按中心是否在盒内筛选，边界高斯保持完整，不切开椭球、不重新训练。** 后台核对所有输出记录及元数据，出错自动重建一次，持续失败不报告成功。
+5. 在“视频”页记录关键帧、设置时长与倍率，导出 1080p 或 4K、24/30/60fps MP4。视频重新准备全量点／高斯；启用裁剪时先按原精度筛选。高斯视频采用浮点颜色缓冲完成透明合成，再输出视频。尺寸、时长、帧数及完整解码检查沿用现有自动流程。
+
+点云／高斯的原格式导出保留属性；OBJ、OSGB 和本版网格 3D Tiles 导出不能承载高斯参数，因此点数据请选择“原格式 / Source”。LAS 当前按 LAS 1.0–1.4 非波形点记录验收；波形格式仅支持完整原文件复制。普通点 PLY 支持 ASCII、大小端二进制标量字段；压缩／打包高斯及非标准属性布局不在本版支持范围。完整视频需要容纳全量点的内存、显存和缓存空间。
 
 ## 1.4.0 播放时长与速度 / Duration and speed
 
@@ -67,7 +85,7 @@ OBJ 坐标、UV 和法线写出使用双精度可往返十进制精度（17 位�
 3. 勾选“启用六面剪切 / Enable clipping”，调整 X/Y/Z 最小值和最大值。右侧面板可以拖动滚动条，底部有重置按钮。
 4. 指定独立的新输出目录，选择输出格式，点击“导出盒内模型 / Export clipped”。未开启剪切盒时，请使用“转换完整模型 / Export full”。
 
-PLY 支持本组 binary_little_endian 三角网格及逐面 `texcoord` / `texnumber` / `TextureFile`；STL 支持本组 binary STL；OBJ 支持三角面、正负索引、MTL 和基础颜色贴图（不支持 map_Kd 变换选项）。不是所有第三方格式变体都适用。XML、MTL、JPEG、PNG、KTX2、JSON 等辅助文件随模型读取，不作为独立三维模型打开。
+网格 PLY 支持本组 binary_little_endian 三角网格及逐面 `texcoord` / `texnumber` / `TextureFile`；点／高斯 PLY 支持见 1.5.0。STL 支持本组 binary STL；OBJ 支持三角面、正负索引、MTL 和基础颜色贴图（不支持 map_Kd 变换选项）。不是所有第三方格式变体都适用。XML、MTL、JPEG、PNG、KTX2、JSON 等辅助文件随模型读取，不作为独立三维模型打开。
 
 Windows 10 1903+ / Windows 11 x64，支持 OpenGL 的显卡。预览缓存位于 `%LOCALAPPDATA%\SHARE3DCAM\MeshStudio\preview`；GLB/STL 可复用缓存，其余格式重新打开会重建缓存。关闭程序后可以手动删除该专用缓存目录。原始输入不会修改。
 

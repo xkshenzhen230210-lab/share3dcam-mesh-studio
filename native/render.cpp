@@ -22,6 +22,7 @@
 #include <cmath>
 #include <thread>
 #include "json.hpp"
+#include "point_scene.h"
 
 using json=nlohmann::json;
 namespace fs=std::filesystem;
@@ -110,6 +111,7 @@ struct DisplayMaterials:osg::NodeVisitor {
  }
  void apply(osg::Geode& node)override {
   for(unsigned i=0;i<node.getNumDrawables();i++)if(auto geometry=node.getDrawable(i)->asGeometry()){
+   bool point=false;if(geometry->getUserValue("share_point",point)&&point)continue;
    auto state=geometry->getOrCreateStateSet();bool textured=texture(state);
    for(auto ancestor:getNodePath())if(texture(ancestor->getStateSet()))textured=true;
    state->setMode(GL_LIGHTING,(textured?osg::StateAttribute::OFF:osg::StateAttribute::ON)|osg::StateAttribute::OVERRIDE);
@@ -143,12 +145,15 @@ int main(int argc,char** argv){
   // Validate all poses before committing any output bytes to the encoder.
   osg::ref_ptr<osg::Camera> poseValidator=new osg::Camera;for(auto& pose:frames)cameraPose(poseValidator,pose,double(width)/height);
   progress(progressPath,{{"state","loading"},{"frame",0},{"total",frames.size()}});
-  FullDetail loader;auto model=loader.file(fs::u8path(job.at("source").get<std::string>()));DisplayMaterials materials;model->accept(materials);
+  FullDetail loader;PointScene points;osg::ref_ptr<osg::Node> model;
+  if(points.load(fs::u8path(job.at("source").get<std::string>())))model=points.node;
+  else model=loader.file(fs::u8path(job.at("source").get<std::string>()));DisplayMaterials materials;model->accept(materials);
   osg::ref_ptr<osg::ClipNode> scene=new osg::ClipNode;scene->addChild(model);
   if(job.contains("clip_box")&&!job.at("clip_box").is_null()){
    auto b=job.at("clip_box").get<std::vector<double>>();
    if(b.size()!=6||!std::all_of(b.begin(),b.end(),[](double x){return std::isfinite(x);})||b[0]>=b[3]||b[1]>=b[4]||b[2]>=b[5])throw std::runtime_error("Invalid clipping box");
-   for(unsigned i=0;i<6;i++){osg::Vec4d p(0,0,0,0);p[i%3]=i<3?1:-1;p[3]=i<3?-b[i]:b[i];scene->addClipPlane(new osg::ClipPlane(i,p));}
+   points.setClip(true,b);
+   if(!points.active)for(unsigned i=0;i<6;i++){osg::Vec4d p(0,0,0,0);p[i%3]=i<3?1:-1;p[3]=i<3?-b[i]:b[i];scene->addClipPlane(new osg::ClipPlane(i,p));}
   }
   // A small invisible pbuffer owns the GL context; the FBO owns export dimensions.
   osg::ref_ptr<osg::GraphicsContext::Traits> traits=new osg::GraphicsContext::Traits;
@@ -166,12 +171,14 @@ int main(int argc,char** argv){
   auto camera=viewer.getCamera();camera->setGraphicsContext(context);camera->setViewport(0,0,width,height);camera->setClearColor(osg::Vec4(.055,.08,.12,1));
   camera->setRenderTargetImplementation(osg::Camera::FRAME_BUFFER_OBJECT);camera->setDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);camera->setReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
   osg::ref_ptr<osg::Image> image=new osg::Image;image->allocateImage(width,height,1,GL_RGB,GL_UNSIGNED_BYTE,1);
+  if(points.gaussian)image->setInternalTextureFormat(GL_RGB32F_ARB);
   camera->attach(osg::Camera::COLOR_BUFFER,image);camera->attach(osg::Camera::DEPTH_BUFFER,GL_DEPTH_COMPONENT24);
   viewer.setSceneData(scene);viewer.realize();if(hidden)ShowWindow(hidden,SW_HIDE);
   if(!viewer.isRealized())throw std::runtime_error("Cannot realize offscreen OpenGL context");
+  if(points.active){context->makeCurrent();points.checkProgram(*context->getState());}
   const size_t bytes=size_t(width)*height*3;
   for(size_t i=0;i<frames.size();i++){
-   cameraPose(camera,frames[i],double(width)/height);viewer.frame(double(i)/fps);
+   cameraPose(camera,frames[i],double(width)/height);points.update(camera);viewer.frame(double(i)/fps);
    auto glError=glGetError();if(glError!=GL_NO_ERROR)throw std::runtime_error("OpenGL rendering failed (error "+std::to_string(glError)+"); GPU memory or framebuffer unavailable");
    if(image->getTotalSizeInBytes()!=bytes)throw std::runtime_error("Unexpected framebuffer byte count");
    if(fwrite(image->data(),1,bytes,stdout)!=bytes)throw std::runtime_error("Video encoder pipe closed");

@@ -124,6 +124,30 @@ def convert(input_path,output_path,formats='both',control=None,clip_box=None,pre
     if source.is_dir():
         for name in ('tileset.json','3dtiles/tileset.json','Model.glb','glb/Model.glb','Model.osgb','Model.obj','Model.ply','Model.stl'):
             if (source/name).is_file():source=source/name;break
+    from point_data import is_point_source,crop_points,prepare_points
+    if is_point_source(source):
+        started=time.monotonic();output=Path(output_path).resolve();base=source.parent
+        if output==base or output in base.parents or output.is_relative_to(base):raise ValueError('输出目录必须独立于输入目录')
+        if output.exists() and any(output.iterdir()):raise ValueError('输出目录不是空目录')
+        if formats not in ('source','pointcache'):
+            raise ValueError('点云／高斯请选择“原格式 / Source”导出；三角网格可导出 OBJ、OSGB、3D Tiles / Select Source format for point data')
+        output.mkdir(parents=True,exist_ok=True)
+        try:
+            if formats=='source':report=crop_points(source,output,clip_box,control)
+            else:
+                manifest=prepare_points(source,output,control,preview=preview)
+                info=json.loads(manifest.read_text(encoding='utf-8'))
+                report=dict(state='succeeded',source=str(source),output=str(manifest),kind=info['kind'],count=info['count'],preview=preview)
+            report.update(seconds=round(time.monotonic()-started,2),formats=formats)
+            write_json(output/'conversion_report.json',report)
+            write_json(output/'mesh_result.json',dict(state='succeeded',code=0,data={'source_file':Path(report['output']).name}))
+            write_json(output/'mesh_progress.json',dict(state='succeeded',progress=100))
+            return report
+        except Exception as error:
+            state='cancelled' if isinstance(error,Cancelled) else 'failed'
+            write_json(output/'mesh_result.json',dict(state=state,code=1,error_reason=str(error),data={}))
+            raise
+    if formats in ('source','pointcache'):raise ValueError('原格式导出用于 LAS 或点／高斯 PLY / Source export requires point data')
     if source.suffix.lower() in ('.obj','.osgb'):
         output=Path(output_path).resolve();base=source.parent
         if output==base or output in base.parents or output.is_relative_to(base):raise ValueError('输出目录必须独立于输入目录')
@@ -141,6 +165,9 @@ def convert(input_path,output_path,formats='both',control=None,clip_box=None,pre
 
 def _convert(input_path,output_path,formats='both',control=None,clip_box=None,preview=False,prepared=None):
     control=control or Control();started=time.time()
+    if formats=='3dtiles':
+        from mesh_tiles_export import export_tiles
+        return export_tiles(input_path,output_path,control,clip_box,prepared)
     if formats not in ('obj','osgb','both'):raise ValueError('无效输出格式')
     control.log('分析输入结构、坐标和文件引用…')
     tree,source,kind=prepared or input_tree(input_path)

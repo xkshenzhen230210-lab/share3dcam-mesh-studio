@@ -104,9 +104,19 @@ def convert_isolated(input_path,output_path,formats='both',control=None,clip_box
                     raise RuntimeError('后台进程未完成结果检查 / Worker did not complete output checks')
                 if formats in ('obj','both') and not preview and report.get('quality',{}).get('state')!='passed':
                     raise RuntimeError('后台检查未通过 / Background checks did not pass')
+                # Staged absolute paths must refer to the installed result after publication.
+                def rebase(value):
+                    if isinstance(value,dict):return {k:rebase(v) for k,v in value.items()}
+                    if isinstance(value,list):return [rebase(v) for v in value]
+                    if isinstance(value,str) and value.startswith(str(target)+os.sep):return str(output)+value[len(str(target)):]
+                    return value
+                report=rebase(report);result=rebase(result)
                 for item in target.iterdir():
                     if item.name not in ('mesh_result.json','mesh_progress.json','conversion_report.json'):
                         item.replace(output/item.name)
+                if (output/'point_result.json').is_file():
+                    point_report=json.loads((output/'point_result.json').read_text(encoding='utf-8'))
+                    write_json(output/'point_result.json',rebase(point_report))
                 report.update(worker_attempts=attempt,seconds=round(time.time()-started,2))
                 write_json(output/'conversion_report.json',report)
                 write_json(output/'mesh_result.json',result)
