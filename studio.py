@@ -31,7 +31,7 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.1.2 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.2.0 | 模型工作台');root.geometry('1440x960');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -44,7 +44,7 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.1.2\n模型查看 · 裁剪 · 转换',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.2.0\n模型查看 · 裁剪 · 转换',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar()
@@ -75,14 +75,6 @@ def gui():
         if not all(math.isfinite(x) for x in b) or any(b[i]>=b[i+3] for i in range(3)):return
         seq+=1;write_json(ipc/'command.json',dict(seq=seq,enabled=enabled.get(),showBox=show_box.get() and enabled.get(),wire=wire.get(),box=b,view=view))
     for label,view in [('适应 / Fit','fit'),('顶视 / Top','top'),('正视 / Front','front'),('右视 / Right','right')]:ttk.Button(toolbar,text=label,command=lambda v=view:command(v)).pack(side='left',padx=(0,5))
-    def review_original_obj():
-        try:
-            path=resolve_source(source.get())
-            if path.suffix.lower()!='.obj':raise ValueError('请先选择 OBJ 文件 / Select an OBJ file first')
-            launcher=[sys.executable] if getattr(sys,'frozen',False) else [sys.executable,str(Path(__file__).parent/'app.py')]
-            subprocess.Popen(launcher+['--review-obj',str(path)],creationflags=subprocess.CREATE_NO_WINDOW)
-        except Exception as e:messagebox.showerror('原图复核 / Original-texture review',str(e))
-    ttk.Button(toolbar,text='OBJ 原图复核 / Review OBJ',command=review_original_obj).pack(side='left',padx=5)
     ttk.Checkbutton(toolbar,text='线框 / Wireframe',variable=wire,command=command).pack(side='right')
     viewport=tk.Frame(left,bg='#0e141f',highlightbackground='#23344a',highlightthickness=1);viewport.pack(fill='both',expand=True)
     placeholder=tk.Label(viewport,text='3D MODEL WORKSPACE\n\n打开模型，开始查看与裁剪\nOpen a model to view and clip',bg='#0e141f',fg='#8195af',font=('Microsoft YaHei UI',16),justify='center');placeholder.place(relx=.5,rely=.5,anchor='center')
@@ -124,7 +116,6 @@ def gui():
     cancel_btn=ttk.Button(actions,text='取消任务 / Cancel',state='disabled',command=lambda:cancel.set());cancel_btn.pack(side='left')
     ttk.Button(actions,text='输出文件夹 / Open output',command=lambda:os.startfile(target.get()) if Path(target.get()).is_dir() else None).pack(side='right')
     ttk.Progressbar(main,variable=progress).pack(fill='x',pady=(12,6));ttk.Label(main,textvariable=status,wraplength=1330).pack(anchor='w')
-    log=tk.Text(main,height=4,bg='#e1e7ef',fg='#324a65',font=('Consolas',9),relief='flat',padx=8,pady=5,state='disabled');log.pack(fill='x',pady=(6,0))
     def busy(active):
         for button in (file_btn,folder_btn,open_btn,export_btn,entry):button.configure(state='disabled' if active else 'normal')
         crop_btn.configure(state='normal' if not active and loaded_source and bounds else 'disabled');cancel_btn.configure(state='normal' if active else 'disabled')
@@ -187,7 +178,8 @@ def gui():
         mode={'OSGB + OBJ':'both','OSGB':'osgb','OBJ':'obj'}[fmt.get()]
         def task(control):
             report=convert(src,dst,mode,control,clip_box=box)
-            events.put(('done',f'导出完成 / Export complete · {report["seconds"]:.1f} s · {dst}',100))
+            result='导出完成，检查通过 / Export complete, checks passed' if report.get('quality',{}).get('state')=='passed' else '导出完成 / Export complete'
+            events.put(('done',f'{result} · {report["seconds"]:.1f} s · {dst}',100))
         launch(task)
     open_btn.configure(command=open_model);export_btn.configure(command=lambda:export_model(False));crop_btn.configure(command=lambda:export_model(True));busy(False)
     def poll():
@@ -198,7 +190,6 @@ def gui():
                 if kind=='viewer':start_viewer(*text);continue
                 if kind=='idle':busy(False);continue
                 if kind!='trace':status.set(text);progress.set(pct)
-                log.configure(state='normal');log.insert('end',datetime.now().strftime('%H:%M:%S')+' '+text+'\n');log.see('end');log.configure(state='disabled')
         except queue.Empty:pass
         if ipc and not state_read and (ipc/'state.json').is_file():
             try:

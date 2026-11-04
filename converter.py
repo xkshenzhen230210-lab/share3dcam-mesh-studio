@@ -13,6 +13,7 @@ from gltf import Glb
 from tiles import Tile, flatten, load_tiles, obj_nodes
 from formats import reader, mesh_tree
 from clipping import clip_primitive
+from quality import ExportQuality
 
 RUNTIME=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'runtime'
 
@@ -49,20 +50,22 @@ class Control:
 
 
 class ObjWriter:
-    def __init__(self,folder):
+    def __init__(self,folder,quality=None):
         self.folder=folder;folder.mkdir(parents=True)
-        self.obj=(folder/'Model.obj').open('wb',buffering=1024*1024)
-        self.mtl=(folder/'Model.mtl').open('w',encoding='utf-8')
-        self.obj.write(b'# Z-up local coordinates; units: metres; see metadata.xml\nmtllib Model.mtl\n')
+        self.obj=(quality.obj_path if quality else folder/'Model.obj').open('wb',buffering=1024*1024)
+        self.mtl=(folder/'Model.mtl').open('w',encoding='utf-8',newline='\n');self.material_text=[]
+        header=b'# Z-up local coordinates; units: metres; see metadata.xml\nmtllib Model.mtl\n'
+        self.obj.write(header)
+        if quality:quality.obj_hash.update(header)
         self.v=0;self.vt=0;self.vn=0;self.materials=set();self.faces=0
     def close(self):self.obj.close();self.mtl.close()
     def add(self,part,texture,name,group):
         xyz=part['positions'];uv=part['uv'];normal=part['normals'];idx=part['indices']
         if name not in self.materials:
             self.materials.add(name);c=part['color']
-            self.mtl.write(f'newmtl {name}\nKa 1 1 1\nKd {c[0]} {c[1]} {c[2]}\nd {c[3]}\nillum 1\n')
-            if texture:self.mtl.write(f'map_Kd {texture}\n')
-            self.mtl.write('\n')
+            text=f'newmtl {name}\nKa 1 1 1\nKd {c[0]} {c[1]} {c[2]}\nd {c[3]}\nillum 1\n'
+            if texture:text+=f'map_Kd {texture}\n'
+            text+='\n';self.mtl.write(text);self.material_text.append(text)
         entry={'materialName':name,'group':group,'vertexBase':self.v,'uvBase':self.vt,'normalBase':self.vn}
         self.v+=len(xyz);self.vt+=len(uv) if uv is not None else 0;self.vn+=len(normal) if normal is not None else 0;self.faces+=len(idx)
         return entry
@@ -148,17 +151,18 @@ def _convert(input_path,output_path,formats='both',control=None,clip_box=None,pr
     if kind=='glb':report['warnings'].append('GLB 不含 LOD 树：保留源节点分块，生成静态分页 OSGB，不臆造多级细节。')
     report['warnings'].append('OBJ 是静态最终精度网格；PBR 参数仅映射基础颜色/透明度。')
     progress_file=output/'mesh_progress.json'
-    obj=None;global_min=np.full(3,np.inf);global_max=-global_min
+    obj=None;quality=None;global_min=np.full(3,np.inf);global_max=-global_min
     completed=0;geometry_count=0;empty_nodes=set()
     report['clip_box']=list(clip_box) if clip_box is not None else None
     report['preview_textures']=preview
     try:
-        obj=ObjWriter(output/'obj') if want_obj else None
+        quality=ExportQuality(control) if want_obj and not preview else None
+        obj=ObjWriter(output/'obj',quality) if want_obj else None
         with tempfile.TemporaryDirectory(prefix='meshconvert_') as temp:
             work=Path(temp)
             # Reverse order ensures child coarse files exist when writing parent LOD pages.
             for node in reversed(all_nodes):
-                control.check();completed+=1;percent=100*(completed-1)/len(all_nodes)
+                control.check();completed+=1;percent=(90 if quality else 100)*(completed-1)/len(all_nodes)
                 label=str(node.output)
                 if completed==1 or completed%10==0 or node.source:
                     control.log(f'[{completed}/{len(all_nodes)}] {label}',percent)
@@ -202,6 +206,7 @@ def _convert(input_path,output_path,formats='both',control=None,clip_box=None,pr
                                 entry['texture']=texpath.name;entry.update({k:v for k,v in sampler.items() if k in ('wrapS','wrapT','minFilter','magFilter')})
                             if do_obj:
                                 texture_name='tex_'+texpath.name if texpath else None
+                                if quality and texpath:quality.remember_texture(texpath,texture_name)
                                 if texpath and not (obj.folder/texture_name).exists():shutil.copy2(texpath,obj.folder/texture_name)
                                 material_name='mat_'+hashlib.sha256((digest+json.dumps(part['material'],sort_keys=True)).encode()).hexdigest()[:24]
                                 entry.update(obj.add(part,texture_name,material_name,f'{node.output.stem}_n{part["node"]}_p{part["primitive"]}'))
@@ -239,19 +244,30 @@ def _convert(input_path,output_path,formats='both',control=None,clip_box=None,pr
                         job['children'].append(child)
                     write_json(work/'job.json',job)
                     control.run([RUNTIME/'mesh_writer.exe','write','job.json'],work)
+                    if do_obj and quality:
+                        quality.check_chunk(work/'part.obj',buffer,primitives,
+                                            lambda:control.run([RUNTIME/'mesh_writer.exe','write','job.json'],work))
                     if want_osg:shutil.copy2(work/'result.osgb',destination)
                     if do_obj:
-                        with (work/'part.obj').open('rb') as part_file:shutil.copyfileobj(part_file,obj.obj,1024*1024)
+                        if quality:quality.append(work/'part.obj',obj.obj)
+                        else:
+                            with (work/'part.obj').open('rb') as part_file:shutil.copyfileobj(part_file,obj.obj,1024*1024)
                     if (work/'children.osgb').is_file():shutil.copy2(work/'children.osgb',output/'osgb'/child_page)
                 report['converted'].append({'output':label,'source':str(node.source) if node.source else None,
                                             'primitives':len(primitives),'obj':do_obj})
         if not geometry_count or (obj is not None and not obj.faces):raise ValueError('剪切盒内没有最终精度网格 / No final-resolution geometry inside clipping box')
-        if obj:obj.close();report.update(obj_vertices=obj.v,obj_triangles=obj.faces,obj_materials=len(obj.materials));obj=None
+        material_text=''
+        if obj:
+            obj.close();material_text=''.join(obj.material_text)
+            report.update(obj_vertices=obj.v,obj_triangles=obj.faces,obj_materials=len(obj.materials));obj=None
         for fmt in ('obj','osgb'):
             folder=output/fmt
             if folder.exists():(folder/'metadata.xml').write_bytes(metadata(source))
         contract=source.parent/'coordinate_contract.json'
         if contract.is_file():shutil.copy2(contract,output/'coordinate_contract.json')
+        if quality:
+            report['quality']=quality.finish(output/'obj',material_text,metadata(source))
+            write_json(output/'quality_report.json',report['quality'])
         data={'progress':100}
         if want_obj:data.update(obj_path='obj',obj_merge_flag=1,obj_model_list=['obj/Model.obj'],obj_material_list=['obj/Model.mtl'])
         if want_osg:data.update(osgb_path='osgb',osgb_root='osgb/Model.osgb',osgb_model_list=['osgb/Model.osgb'])
@@ -266,7 +282,12 @@ def _convert(input_path,output_path,formats='both',control=None,clip_box=None,pr
         if obj:obj.close()
         state='cancelled' if isinstance(e,Cancelled) else 'failed'
         report.update(state=state,error=str(e),seconds=round(time.time()-started,2))
+        if quality:
+            quality.report.update(state=state,error=str(e));report['quality']=quality.report
+            write_json(output/'quality_report.json',quality.report)
         write_json(output/'conversion_report.json',report)
         write_json(output/'mesh_result.json',{'code':1,'state':state,'error_reason':str(e),'data':{}})
         write_json(progress_file,{'progress':round(100*completed/len(all_nodes),2),'state':state})
         raise
+    finally:
+        if quality:quality.close()
