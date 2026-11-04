@@ -10,7 +10,7 @@ plugins=dest/'osgPlugins-3.6.5';plugins.mkdir(exist_ok=True)
 for name in ['osg','serializers_osg','jpeg','png','obj','ply','stl']:
     shutil.copy2(osg/'osgPlugins-3.6.5'/f'osgdb_{name}.dll',plugins)
 shutil.copy2(root/'build/native/Release/mesh_writer.exe',dest)
-for name in ['reader','viewer']:shutil.copy2(root/f'build/native/Release/mesh_{name}.exe',dest)
+for name in ['reader','viewer','render']:shutil.copy2(root/f'build/native/Release/mesh_{name}.exe',dest)
 for name in ['ktx.exe','ktx.dll']:shutil.copy2(root/'vendor/ktx/bin'/name,dest)
 redist=Path(r'C:\UE\BuildTools2022\VC\Redist\MSVC')
 if redist.exists():

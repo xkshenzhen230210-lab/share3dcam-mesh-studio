@@ -18,8 +18,12 @@
 #include <filesystem>
 #include <thread>
 #include <iostream>
+#include <cmath>
 #include "json.hpp"
 using json=nlohmann::json;namespace fs=std::filesystem;
+struct CameraManipulator:osgGA::TrackballManipulator {
+ void applyPose(const osg::Vec3d& eye,const osg::Vec3d& center,const osg::Vec3d& up){_thrown=false;flushMouseEventStack();finishAnimation();setTransformation(eye,center,up);}
+};
 struct CoarseBounds:osg::ComputeBoundsVisitor {
  fs::path folder;unsigned depth=0;
  explicit CoarseBounds(fs::path path):folder(path){}
@@ -63,7 +67,7 @@ int main(int argc,char**argv){try{
  osgViewer::Viewer viewer;viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);viewer.getCamera()->setGraphicsContext(gc);viewer.getCamera()->setViewport(0,0,w,h);viewer.getCamera()->setProjectionMatrixAsPerspective(35.,double(w)/h,.01,100000.);viewer.getCamera()->setClearColor(osg::Vec4(.055,.08,.12,1));
  auto scene=new osg::Group;auto clip=new osg::ClipNode;clip->addChild(model);scene->addChild(clip);
  auto box=new osg::Geode;auto geom=new osg::Geometry;auto vertices=new osg::Vec3Array(24);geom->setVertexArray(vertices);geom->addPrimitiveSet(new osg::DrawArrays(GL_LINES,0,24));auto colors=new osg::Vec4Array;colors->push_back(osg::Vec4(1,.52,.18,1));geom->setColorArray(colors,osg::Array::BIND_OVERALL);box->addDrawable(geom);box->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);box->getOrCreateStateSet()->setAttribute(new osg::LineWidth(2));scene->addChild(box);box->setNodeMask(0);
- auto manip=new osgGA::TrackballManipulator;
+ auto manip=new CameraManipulator;
  // Match desktop modeling tools: wheel forward zooms in, backward zooms out.
  manip->setWheelZoomFactor(-manip->getWheelZoomFactor());
  viewer.setCameraManipulator(manip);viewer.setSceneData(scene);viewer.realize();viewer.home();
@@ -71,19 +75,28 @@ int main(int argc,char**argv){try{
  if(bb.valid())sphere=osg::BoundingSphere(bb);
  json lohi;if(bb.valid())lohi={bb.xMin(),bb.yMin(),bb.zMin(),bb.xMax(),bb.yMax(),bb.zMax()};else lohi={sphere.center().x()-sphere.radius(),sphere.center().y()-sphere.radius(),sphere.center().z()-sphere.radius(),sphere.center().x()+sphere.radius(),sphere.center().y()+sphere.radius(),sphere.center().z()+sphere.radius()};
  auto home=sphere.center();double distance=std::max(1.f,sphere.radius());manip->setHomePosition(home+osg::Vec3d(distance*1.2,-distance*1.8,distance*1.3),home,osg::Vec3d(0,0,1));viewer.home();
- state({{"ready",true},{"bounds",job.value("bounds",lohi)}});long long last=-1;int frames=0;
+ long long last=-1;int frames=0;double fovy=35.,fixedAspect=0.;
+ auto projection=[&](){int vw=w,vh=h;if(fixedAspect>0){if(double(w)/h>fixedAspect)vw=std::max(1,int(h*fixedAspect));else vh=std::max(1,int(w/fixedAspect));}viewer.getCamera()->setViewport((w-vw)/2,(h-vh)/2,vw,vh);viewer.getCamera()->setProjectionMatrixAsPerspective(fovy,fixedAspect>0?fixedAspect:double(w)/h,.01,100000.);};
+ auto publish=[&](){osg::Vec3d eye,center,up;manip->getTransformation(eye,center,up);state({{"ready",true},{"bounds",job.value("bounds",lohi)},{"applied_seq",last},{"camera",{{"eye",{eye.x(),eye.y(),eye.z()}},{"center",{center.x(),center.y(),center.z()}},{"up",{up.x(),up.y(),up.z()}},{"fovy",fovy}}}});};
+ auto lastState=std::chrono::steady_clock::now();publish();
  while(!viewer.done()&&IsWindow(parent)){
-  GetClientRect(parent,&r);if(r.right!=w||r.bottom!=h){w=std::max(10L,r.right);h=std::max(10L,r.bottom);SetWindowPos(child,nullptr,0,0,w,h,SWP_NOZORDER);gc->resized(0,0,w,h);viewer.getCamera()->setViewport(0,0,w,h);viewer.getCamera()->setProjectionMatrixAsPerspective(35.,double(w)/h,.01,100000.);}
+  GetClientRect(parent,&r);if(r.right!=w||r.bottom!=h){w=std::max(10L,r.right);h=std::max(10L,r.bottom);SetWindowPos(child,nullptr,0,0,w,h,SWP_NOZORDER);gc->resized(0,0,w,h);projection();}
   if(frames++%3==0){try{std::ifstream f("command.json");json command;if(f){f>>command;long long seq=command.value("seq",0LL);if(seq!=last){last=seq;if(command.value("quit",false))break;
+    if(command.contains("aspect")){double next=command.at("aspect");if(std::isfinite(next)&&next>=0&&next<=10){fixedAspect=next;projection();}}
     bool enabled=command.value("enabled",false);auto b=command.value("box",std::vector<double>{-1,-1,-1,1,1,1});
     while(clip->getNumClipPlanes())clip->removeClipPlane(clip->getClipPlane(0));
     if(enabled)for(unsigned i=0;i<6;i++){osg::Vec4d p(0,0,0,0);p[i%3]=i<3?1:-1;p[3]=i<3?-b[i]:b[i];clip->addClipPlane(new osg::ClipPlane(i,p));}
     box->setNodeMask(command.value("showBox",false)?~0u:0u);unsigned at=0;for(int axis=0;axis<3;axis++)for(int j=0;j<4;j++){osg::Vec3 a,c;for(int k=0;k<3;k++)a[k]=c[k]=b[k];int a1=(axis+1)%3,a2=(axis+2)%3;a[a1]=c[a1]=b[a1+((j&1)?3:0)];a[a2]=c[a2]=b[a2+((j&2)?3:0)];c[axis]=b[axis+3];(*vertices)[at++]=a;(*vertices)[at++]=c;}vertices->dirty();geom->dirtyBound();geom->dirtyDisplayList();
     scene->getOrCreateStateSet()->setAttributeAndModes(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK,command.value("wire",false)?osg::PolygonMode::LINE:osg::PolygonMode::FILL));
     std::string view=command.value("view",std::string());if(view=="fit")viewer.home();else if(!view.empty()){auto c=sphere.center();double d=std::max(1.f,sphere.radius())*3.5;osg::Vec3d eye=c,up(0,0,1);if(view=="top"){eye.z()+=d;up.set(0,1,0);}else if(view=="front")eye.y()-=d;else eye.x()+=d;manip->setTransformation(eye,c,up);}
+    if(command.contains("camera")){
+     auto& camera=command.at("camera");auto vec=[&](const char* key){auto a=camera.at(key).get<std::vector<double>>();if(a.size()!=3||!std::all_of(a.begin(),a.end(),[](double v){return std::isfinite(v);}))throw std::runtime_error("Invalid camera vector");return osg::Vec3d(a[0],a[1],a[2]);};
+     auto eye=vec("eye"),center=vec("center"),up=vec("up");double nextFov=camera.value("fovy",35.);
+     if((center-eye).length2()>1e-20&&((center-eye)^up).length2()>1e-20&&std::isfinite(nextFov)&&nextFov>1&&nextFov<179){manip->applyPose(eye,center,up);fovy=nextFov;projection();}
+    }
    }}}catch(...){}}
   if(frames%30==0){DisplayMaterials materials;model->accept(materials);}
-  viewer.frame();std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  viewer.frame();auto now=std::chrono::steady_clock::now();if(now-lastState>=std::chrono::milliseconds(100)){publish();lastState=now;}std::this_thread::sleep_for(std::chrono::milliseconds(10));
  }
  viewer.setDone(true);return 0;
 }catch(std::exception&e){state({{"error",e.what()}});std::cerr<<e.what();return 1;}}
