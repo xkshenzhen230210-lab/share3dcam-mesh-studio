@@ -12,3 +12,7 @@ Date: 2026-11-06. New functionality: explicit LAS import, point size, selected-w
 Implementation review checked full-source statistics vs bounded preview, double-precision coordinate centering, explicit units, signed legend saturation, report provenance, cancellation cleanup, invalidation after edits, source immutability, no new dependency, native shader default compatibility and original-model video behavior.
 
 Evidence files in the development workspace: `validation/v170/ui_report.json`, `validation/v170/real_report.json`, `validation/v170_native_soak_report.json`, `validation/v170/full_suite_result.json`. Final portable GUI and archive checks are recorded in the release copy of this document.
+
+Final portable GUI opened the bundled synthetic LAS through the actual file dialog, displayed 120,701 points, selected the wall and calculated the expected visible heatmap. Its saved numerical report agrees with the independently tested source build. GUI executable SHA256: `743B26A11A755ADD46233CBD515FC524B2D2C6725A843D49191556E296542269`.
+
+Final ZIP: 224,093,486 bytes, SHA256 `ffcb9596ffc544ec06662409d8884c165f4f73d3cd6b8225234f7ee111d5ac17`. Single-thread pinned 7-Zip verification passed; independent Python ZIP decoding and SHA256 checks of all 1,118 files passed and matched the release folder. An earlier unpinned 7-Zip run reported a transient ffmpeg CRC error; independent decoding and source comparison confirmed that entry and the archive are intact. No ZIP rebuild was needed. Local demo export folders are excluded from the ZIP.
