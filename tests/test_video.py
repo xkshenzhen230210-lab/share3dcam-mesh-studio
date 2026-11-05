@@ -10,6 +10,10 @@ from unittest.mock import patch
 from converter import Control, Cancelled
 from video import validate_keyframes, camera_at, sample_frames, render_video
 
+# Windows venv launchers spawn another Python process. Use the real interpreter
+# so stopping this fixture has the same one-process ownership as mesh_render.exe.
+WORKER_PYTHON=getattr(sys,'_base_executable',sys.executable)
+
 
 def key(time, eye=(0,-10,0), center=(0,0,0), up=(0,0,1)):
     return dict(time=time,eye=list(eye),center=list(center),up=list(up),fovy=35)
@@ -71,7 +75,7 @@ class VideoTests(unittest.TestCase):
         actual_popen=subprocess.Popen;children=[]
         def start(command,**kwargs):
             if Path(command[0]).stem=='mesh_render':
-                command=[sys.executable,'-c','import time;time.sleep(60)']
+                command=[WORKER_PYTHON,'-c','import time;time.sleep(60)']
             child=actual_popen(command,**kwargs);children.append(child);return child
         with tempfile.TemporaryDirectory() as folder:
             source=Path(folder)/'model.osgb';source.write_bytes(b'fake renderer ignores this fixture')
@@ -91,7 +95,7 @@ class VideoTests(unittest.TestCase):
         actual_popen=subprocess.Popen
         def start(command,**kwargs):
             if Path(command[0]).stem=='mesh_render':
-                command=[sys.executable,'-c',"import sys;sys.stderr.write('simulated renderer failure');sys.exit(17)"]
+                command=[WORKER_PYTHON,'-c',"import sys;sys.stderr.write('simulated renderer failure');sys.exit(17)"]
             return actual_popen(command,**kwargs)
         with tempfile.TemporaryDirectory() as folder:
             source=Path(folder)/'model.osgb';source.write_bytes(b'fake renderer ignores this fixture')

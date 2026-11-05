@@ -11,12 +11,16 @@ from pathlib import Path
 
 import numpy as np
 
-from converter import Control, RUNTIME, write_json
+from converter import Control, RUNTIME
 from model_paths import resolve_model
 from supervisor import convert_isolated
+from video_process import render_stream
 
 RESOLUTIONS={'1080p':(1920,1080),'4K':(3840,2160)}
 FRAME_RATES=(24,30,60)
+RENDER_LOAD_TIMEOUT=600
+RENDER_CONTEXT_TIMEOUT=45
+RENDER_STALL_TIMEOUT=180
 
 
 def _vector(value):
@@ -132,21 +136,6 @@ def _tool(name):
     raise RuntimeError('缺少视频组件 / Missing video component: '+name)
 
 
-def _stop(process):
-    if process is not None and process.poll() is None:
-        process.terminate()
-        try:process.wait(timeout=3)
-        except subprocess.TimeoutExpired:process.kill();process.wait()
-
-
-def _tail(path):
-    try:
-        with path.open('rb') as stream:
-            stream.seek(max(0,path.stat().st_size-3000))
-            return stream.read().decode('utf-8',errors='replace')
-    except OSError:return ''
-
-
 def render_video(source,output,keys,resolution='1080p',fps=30,control=None,clip_box=None):
     """Prepare original textures, stream native frames, verify, then publish MP4."""
     control=control or Control();control.check();started=time.monotonic()
@@ -180,44 +169,13 @@ def render_video(source,output,keys,resolution='1080p',fps=30,control=None,clip_
             stage=Control(lambda message,percent:control.log(message,percent*.35),control.event)
             convert_isolated(source,Path(model_work)/'model','osgb',stage,preview=False)
             prepared=Path(model_work)/'model/osgb/Model.osgb'
-        control.check();control.log('逐帧渲染视频 / Rendering video frames',35)
-        job=work/'job.json';progress=work/'progress.json';encoded=work/'video.mp4'
-        write_json(job,dict(source=str(prepared),width=width,height=height,fps=fps,frames=frames,
-                            clip_box=clip_box,progress=str(progress)))
-        render_log=work/'render.log';encode_log=work/'encode.log'
+        control.check();control.log('启动完整精度视频渲染 / Starting full-resolution rendering',35)
         env=os.environ.copy();env['OSG_LIBRARY_PATH']=str(RUNTIME/'osgPlugins-3.6.5')
         env['PATH']=str(RUNTIME)+os.pathsep+env.get('PATH','')
-        flags=getattr(subprocess,'CREATE_NO_WINDOW',0);render=None;encode=None;last=-1
-        command=[str(ffmpeg),'-hide_banner','-nostdin','-v','error','-f','rawvideo',
-                 '-pixel_format','rgb24','-video_size',f'{width}x{height}','-framerate',str(fps),
-                 '-i','pipe:0','-an','-vf','vflip','-c:v','libx264','-preset','medium',
-                 '-crf','18','-pix_fmt','yuv420p','-threads','2','-filter_threads','1',
-                 '-movflags','+faststart','-n',str(encoded)]
-        with render_log.open('wb') as rlog,encode_log.open('wb') as elog:
-            try:
-                render=subprocess.Popen([str(renderer),str(job)],cwd=work,env=env,stdout=subprocess.PIPE,stderr=rlog,creationflags=flags)
-                encode=subprocess.Popen(command,cwd=work,env=env,stdin=render.stdout,stdout=elog,stderr=subprocess.STDOUT,creationflags=flags)
-                render.stdout.close()
-                while render.poll() is None or encode.poll() is None:
-                    control.check()
-                    if encode.poll() is not None and encode.returncode:
-                        raise RuntimeError('视频编码失败 / Encoding failed: '+_tail(encode_log))
-                    if render.poll() is not None and render.returncode:
-                        raise RuntimeError('模型渲染失败 / Rendering failed: '+_tail(render_log))
-                    try:
-                        current=json.loads(progress.read_text(encoding='utf-8'));frame=int(current.get('frame',0))
-                        if frame!=last:
-                            last=frame;control.log(f'渲染视频 / Rendering video · {frame}/{len(frames)}',35+55*min(1,frame/len(frames)))
-                    except (OSError,ValueError):pass
-                    control.event.wait(.1)
-                if render.returncode:raise RuntimeError('模型渲染失败 / Rendering failed: '+_tail(render_log))
-                if encode.returncode:raise RuntimeError('视频编码失败 / Encoding failed: '+_tail(encode_log))
-            finally:_stop(render);_stop(encode)
+        request=dict(source=str(prepared),original_source=str(source),width=width,height=height,fps=fps,frames=frames,clip_box=clip_box)
+        encoded,render_state,attempts=render_stream(renderer,ffmpeg,request,work,output,env,control,
+            dict(load=RENDER_LOAD_TIMEOUT,context=RENDER_CONTEXT_TIMEOUT,stall=RENDER_STALL_TIMEOUT))
         control.check()
-        try:render_state=json.loads(progress.read_text(encoding='utf-8'))
-        except (OSError,ValueError):raise RuntimeError('渲染结果不完整 / Incomplete render result') from None
-        if render_state.get('state')!='succeeded' or render_state.get('frame')!=len(frames):
-            raise RuntimeError('视频帧未完整生成 / Not all video frames were rendered')
         control.log('正在自动检查视频 / Checking video automatically',92)
         probe=control.run([ffprobe,'-v','error','-select_streams','v:0','-count_frames',
                            '-show_entries','stream=codec_name,width,height,nb_read_frames,r_frame_rate,duration',
@@ -239,6 +197,7 @@ def render_video(source,output,keys,resolution='1080p',fps=30,control=None,clip_
                     width=width,height=height,fps=fps,frames=count,duration=duration,
                     codec='h264',quality='CRF 18',textures='original',clip_box=clip_box,
                     seconds=round(time.monotonic()-started,2),checks='passed',keyframes=keys)
+        report.update(graphics=render_state.get('graphics',{}),render_attempts=attempts)
         # Windows rename fails if another process created the destination meanwhile.
         # Explicit recheck also protects POSIX development runs in normal use.
         if output.exists():raise ValueError('视频文件已存在 / Video output already exists')
