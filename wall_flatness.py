@@ -25,17 +25,23 @@ def deviation_colors(deviation_mm, tolerance_mm):
     return zero + np.abs(t)[:, None]*(ends-zero)
 
 
-def wall_camera(report):
+def wall_camera(report, aspect=1.):
     center = np.asarray(report['centroid'])
     normal = np.asarray(report['normal'])
     bounds = np.asarray(report['bounds'])
-    # Fit conservatively even in the narrow desktop viewport.
-    distance = max(float(np.linalg.norm(bounds[1]-bounds[0]))*2.5, .01)
     up = np.array([0., 0., 1.])
     if abs(normal @ up) > .95:
         up = np.array([0., 1., 0.])
     up -= normal*(up @ normal)
     up /= np.linalg.norm(up)
+    right = np.cross(up,normal)
+    corners = np.array([[bounds[i,0],bounds[j,1],bounds[k,2]]
+                        for i in range(2) for j in range(2) for k in range(2)])-center
+    tangent = math.tan(math.radians(35/2))
+    distance = max(np.max(np.abs(corners@up))/tangent,
+                   np.max(np.abs(corners@right))/(tangent*max(.1,float(aspect))))*1.15
+    distance += float(np.max(np.abs(corners@normal)))
+    distance = max(distance, .1)
     return {'eye': (center+normal*distance).tolist(), 'center': center.tolist(),
             'up': up.tolist(), 'fovy': 35.}
 
@@ -97,8 +103,8 @@ def analyze_wall(source, output, box, unit='m', tolerance_mm=5., control=None):
     reader = _LasSource(source)
     if not reader.count:
         raise ValueError('LAS 点云为空 / LAS point cloud is empty')
-    if output.exists() and any(output.iterdir()):
-        raise FileExistsError('请选择空的成果目录 / Choose an empty result folder')
+    if output.exists():
+        raise FileExistsError('成果目录已存在，请使用新目录 / Result folder exists; choose a new folder')
 
     def unchanged():
         stat = source.stat()
@@ -146,7 +152,7 @@ def analyze_wall(source, output, box, unit='m', tolerance_mm=5., control=None):
     centroid = anchor+mean
     factor = UNIT_MM[unit]
     stride = max(1, math.ceil(count/PREVIEW_LIMIT))
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=False)
     generated = ['points.bin', 'model.spoints', 'summary.csv', 'report.html', 'report.json']
     minimum, maximum, absolute_sum, square_sum = math.inf, -math.inf, 0., 0.
     outside, seen, preview = 0, 0, 0

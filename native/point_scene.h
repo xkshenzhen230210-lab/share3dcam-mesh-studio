@@ -27,7 +27,7 @@ struct PointScene {
  osg::ref_ptr<osg::Geometry> geometry;
  osg::ref_ptr<osg::Program> program;
  osg::ref_ptr<osg::DrawElementsUInt> order;
- osg::ref_ptr<osg::Uniform> viewport,clipEnabled,clipMin,clipMax;
+ osg::ref_ptr<osg::Uniform> viewport,clipEnabled,clipMin,clipMax,pointSize;
  std::vector<float> sh;std::vector<osg::Vec4> baseColors;
  osg::Matrixd previous;bool updated=false;
 
@@ -82,14 +82,14 @@ struct PointScene {
   program->addShader(new osg::Shader(osg::Shader::VERTEX,R"GLSL(
 #version 150 compatibility
 in vec3 covA;in vec3 covB;
-uniform vec2 viewportSize;uniform bool gaussian;uniform bool clipEnabled;
+uniform vec2 viewportSize;uniform bool gaussian;uniform bool clipEnabled;uniform float pointSize;
 uniform vec3 clipMin;uniform vec3 clipMax;
 out vec3 covariance;out vec4 pointColor;out float skipPoint;
 void main(){
  vec3 local=gl_Vertex.xyz;vec4 eye=gl_ModelViewMatrix*gl_Vertex;
  skipPoint=(eye.z>=-0.01 || (clipEnabled && (any(lessThan(local,clipMin)) || any(greaterThan(local,clipMax)))))?1.0:0.0;
  gl_Position=gl_ProjectionMatrix*eye;pointColor=gl_Color;
- covariance=vec3(1.0,0.0,1.0);
+ float radius=pointSize*0.5;covariance=vec3(radius*radius,0.0,radius*radius);
  if(gaussian && skipPoint<0.5){
   mat3 worldCov=mat3(covA.x,covA.y,covA.z,covA.y,covB.x,covB.y,covA.z,covB.y,covB.z);
   mat3 view=mat3(gl_ModelViewMatrix);mat3 c=view*worldCov*transpose(view);
@@ -130,6 +130,7 @@ void main(){
 )GLSL"));
   state->setAttributeAndModes(program,osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE);
   viewport=new osg::Uniform("viewportSize",osg::Vec2(1920,1080));state->addUniform(viewport);
+  pointSize=new osg::Uniform("pointSize",2.f);state->addUniform(pointSize);
   clipEnabled=new osg::Uniform("clipEnabled",false);clipMin=new osg::Uniform("clipMin",osg::Vec3());clipMax=new osg::Uniform("clipMax",osg::Vec3());
   state->addUniform(clipEnabled);state->addUniform(clipMin);state->addUniform(clipMax);state->addUniform(new osg::Uniform("gaussian",gaussian));
   state->setMode(GL_LIGHTING,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE);
@@ -147,6 +148,9 @@ void main(){
   if(!active)return;if(bounds.size()!=6)throw std::runtime_error("Invalid point clipping bounds");
   clipEnabled->set(enabled);clipMin->set(osg::Vec3(bounds[0]-origin.x(),bounds[1]-origin.y(),bounds[2]-origin.z()));
   clipMax->set(osg::Vec3(bounds[3]-origin.x(),bounds[4]-origin.y(),bounds[5]-origin.z()));
+ }
+ void setPointSize(float size){
+  if(active&&std::isfinite(size)&&size>=1.f&&size<=12.f)pointSize->set(size);
  }
  void update(osg::Camera* camera){
   if(!active)return;auto vp=camera->getViewport();viewport->set(osg::Vec2(vp->width(),vp->height()));

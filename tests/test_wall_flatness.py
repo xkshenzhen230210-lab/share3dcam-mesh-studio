@@ -111,6 +111,38 @@ class FlatnessTests(unittest.TestCase):
                 analyze_wall(source, folder/'changed', [-3,-1,-1,3,1,4], control=Control(mutate))
             self.assertFalse((folder/'changed/report.json').exists())
 
+    def test_chunked_moments_match_independent_centered_svd(self):
+        rng = np.random.default_rng(19)
+        xyz = wall()
+        xyz[:,1] = .1*xyz[:,0] + rng.normal(0,.002,len(xyz))
+        xyz += [500000,4000000,100]
+        with patch('point_data.CHUNK_SIZE', 100):
+            result, folder = self.run_case(xyz)
+        data = laspy.read(folder/'墙面.las')
+        source_xyz = np.column_stack([data.x,data.y,data.z])
+        centered = source_xyz-source_xyz.mean(axis=0)
+        _,_,vectors = np.linalg.svd(centered,full_matrices=False)
+        distances = centered@vectors[-1]*1000
+        self.assertAlmostEqual(result['rms_mm'],float(np.sqrt(np.mean(distances**2))),places=5)
+        self.assertAlmostEqual(result['max_abs_mm'],float(np.max(np.abs(distances))),places=5)
+
+    def test_cancel_during_output_and_existing_folder_safety(self):
+        import threading
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);source=folder/'source.las';write_las(source,wall())
+            event=threading.Event()
+            def progress(text,percent):
+                if percent>=90:event.set()
+            with self.assertRaises(Cancelled):
+                analyze_wall(source,folder/'out',[-3,-1,-1,3,1,4],control=Control(progress,event))
+            self.assertFalse(list((folder/'out').iterdir()))
+            marker=folder/'out'/'keep.txt';marker.write_text('preserve')
+            with self.assertRaises(FileExistsError):
+                analyze_wall(source,folder/'out',[-3,-1,-1,3,1,4])
+            self.assertEqual(marker.read_text(),'preserve')
+            with self.assertRaisesRegex(ValueError,'30'):
+                analyze_wall(source,folder/'empty',[10,10,10,11,11,11])
+
 
 if __name__ == '__main__':
     unittest.main()

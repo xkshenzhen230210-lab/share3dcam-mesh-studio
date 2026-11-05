@@ -20,6 +20,8 @@ from supervisor import convert_isolated
 from video import render_video
 from video_panel import VideoPanel
 from workspace_tools import ClipHistory, available_output, read_recent, remember_model, save_view_snapshot
+from flatness_panel import FlatnessPanel
+from wall_flatness import analyze_wall
 
 MODEL_TYPES=[('三维模型 / 3D models','*.glb *.b3dm *.json *.osgb *.obj *.ply *.stl *.las'),('所有文件 / All files','*.*')]
 
@@ -29,26 +31,29 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.6.0 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.7.0 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
     style.configure('Accent.TButton',background='#e5473b',foreground='white',font=('Microsoft YaHei UI',10,'bold'))
     style.map('Accent.TButton',background=[('active','#c6362c'),('disabled','#b9c1cd')])
     style.configure('TProgressbar',background='#e5473b',troughcolor='#d8e0eb',thickness=6)
+    style.configure('TNotebook.Tab',font=('Microsoft YaHei UI',9),padding=(4,4))
     header=tk.Frame(root,bg='#101d30',height=106);header.pack(fill='x');header.pack_propagate(False)
     asset=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'assets/share3dcam.png'
     logo=tk.PhotoImage(file=str(asset)).subsample(2,2);tk.Label(header,image=logo,bg='#101d30').pack(side='left',padx=(24,28))
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.6.0\n网格 · 点云 · 高斯 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.7.0\n网格 · 点云 · 墙面 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar();navigation_speed=tk.StringVar(value='1.5');mouse_sensitivity=tk.StringVar(value='1.0')
     events=queue.Queue();cancel=threading.Event();worker=None;viewer=None;viewer_log=None;ipc=None;loaded_source=None;bounds=None;seq=0;state_read=False;closing=False;pending=None
     clip_history=None;clip_valid=True;slider_drag=False;slider_changed=False;measure_reset=0;task_active=False
     last_result=None
+    point_size=tk.StringVar(value='2')
+    point_kind=None
     recent_path=Path(os.environ.get('LOCALAPPDATA',tempfile.gettempdir()))/'SHARE3DCAM/MeshStudio/recent.json'
     line=ttk.Frame(main);line.pack(fill='x');ttk.Label(line,text='模型 / Model',font=('Microsoft YaHei UI',10,'bold')).pack(side='left',padx=(0,12))
     entry=ttk.Entry(line,textvariable=source);entry.pack(side='left',fill='x',expand=True)
@@ -57,6 +62,9 @@ def gui():
         if p:load_path(p)
     def choose_folder():
         p=filedialog.askdirectory(parent=root,title='打开模型文件夹 / Open model folder')
+        if p:load_path(p)
+    def choose_las():
+        p=filedialog.askopenfilename(parent=root,title='导入 LAS 点云 / Import LAS point cloud',filetypes=[('LAS 点云 / LAS point cloud','*.las')])
         if p:load_path(p)
     def fill_recent():
         recent_menu.delete(0,'end')
@@ -72,6 +80,7 @@ def gui():
     recent_btn=ttk.Menubutton(line,text='最近 / Recent');recent_btn.pack(side='left',padx=(5,0))
     recent_menu=tk.Menu(recent_btn,tearoff=False,postcommand=fill_recent);recent_btn.configure(menu=recent_menu)
     open_btn=ttk.Button(line,text='打开 / Open',style='Accent.TButton');open_btn.pack(side='left',padx=(8,0))
+    las_btn=ttk.Button(line,text='导入 LAS / Import LAS',command=choose_las);las_btn.pack(side='left',padx=(8,0))
     ttk.Label(main,text='GLB · 3D Tiles · OSGB · OBJ · PLY/3DGS · LAS · STL',foreground='#536b85').pack(anchor='w',pady=(8,5))
     mouse_row=ttk.Frame(main);mouse_row.pack(fill='x',pady=(0,5))
     ttk.Label(mouse_row,text='左键绕点 / L-drag orbit · 右键平移 / R-drag pan · 滚轮指向缩放 / Zoom at cursor · 双击居中 / Double-click center',foreground='#536b85').pack(side='left')
@@ -95,6 +104,14 @@ def gui():
         if not math.isfinite(sensitivity) or not .1<=sensitivity<=3.:sensitivity=1.
         mouse_sensitivity.set(f'{sensitivity:g}')
         payload=dict(enabled=enabled.get(),showBox=show_box.get() and enabled.get() and not video_mode,wire=wire.get() and not video_mode,box=clip_history.box,view=view,aspect=16/9 if video_mode else 0,navigation_speed=speed if math.isfinite(speed) and speed>0 else 1.5,mouse_sensitivity=sensitivity,measure=notebook.select()==str(measure_tab),measure_reset=measure_reset)
+        try:size=float(point_size.get())
+        except ValueError:size=2.
+        if not math.isfinite(size) or not 1<=size<=12:size=2.
+        point_size.set(f'{size:g}')
+        payload['point_size']=size
+        result=flat_panel.result
+        payload['analysis_source']=str(Path(result['output'])/'model.spoints') if result else ''
+        payload['analysis_visible']=bool(result and notebook.select()==str(flat_tab) and flat_panel.show_colors.get())
         if camera is not None:payload['camera']=camera
         if move is not None:payload['move']=move
         seq+=1;write_json(ipc/'command.json',dict(payload,seq=seq))
@@ -120,14 +137,17 @@ def gui():
         button=ttk.Button(toolbar,text=label,command=lambda v=view:command(v))
         button.pack(side='left',padx=(0,5));view_buttons.append(button)
     snapshot_btn=ttk.Button(toolbar,text='截图 / PNG',command=lambda:take_snapshot());snapshot_btn.pack(side='left',padx=(4,0))
+    ttk.Label(toolbar,text='点大小 / px').pack(side='left',padx=(10,3))
+    point_entry=ttk.Spinbox(toolbar,from_=1,to=12,increment=1,textvariable=point_size,width=3,command=command)
+    point_entry.pack(side='left');point_entry.bind('<Return>',lambda _:command());point_entry.bind('<FocusOut>',lambda _:command())
     wire_btn=ttk.Checkbutton(toolbar,text='线框 / Wireframe',variable=wire,command=command)
     wire_btn.pack(side='right')
     viewport=tk.Frame(left,bg='#0e141f',highlightbackground='#23344a',highlightthickness=1);viewport.pack(fill='both',expand=True)
     placeholder=tk.Label(viewport,text='3D MODEL WORKSPACE\n\n打开模型，开始查看与裁剪\nOpen a model to view and clip',bg='#0e141f',fg='#8195af',font=('Microsoft YaHei UI',16),justify='center');placeholder.place(relx=.5,rely=.5,anchor='center')
     side_outer=ttk.Frame(content,padding=(18,0,0,0),width=330);side_outer.pack(side='right',fill='y');side_outer.pack_propagate(False)
     notebook=ttk.Notebook(side_outer);notebook.pack(fill='both',expand=True)
-    clip_tab=ttk.Frame(notebook);measure_tab=ttk.Frame(notebook,padding=(12,10));video_tab=ttk.Frame(notebook)
-    notebook.add(clip_tab,text='剪切 / Clip');notebook.add(measure_tab,text='测量 / Measure');notebook.add(video_tab,text='视频 / Video')
+    clip_tab=ttk.Frame(notebook);measure_tab=ttk.Frame(notebook,padding=(12,10));video_tab=ttk.Frame(notebook);flat_tab=ttk.Frame(notebook)
+    notebook.add(clip_tab,text='剪切 Clip');notebook.add(measure_tab,text='测量 Measure');notebook.add(flat_tab,text='墙面 Wall');notebook.add(video_tab,text='视频 Video')
     ttk.Label(measure_tab,text='两点距离 / Two-point distance',font=('Microsoft YaHei UI',13,'bold')).pack(anchor='w',pady=(0,10))
     ttk.Label(measure_tab,text='左键依次点两处。拖动仍可转视角。\nClick two points. Drag to orbit.',wraplength=270,justify='left').pack(anchor='w')
     measure_text=tk.StringVar(value='请先打开模型 / Open a model first')
@@ -141,6 +161,7 @@ def gui():
     ttk.Label(side,text='剪切盒 / Clipping box',font=('Microsoft YaHei UI',14,'bold')).pack(anchor='w',pady=(0,12))
     def clip_toggle():
         if enabled.get() and not commit_clip():enabled.set(False)
+        flat_panel.invalidate()
         sync_controls()
         command()
     clip_toggle_btn=ttk.Checkbutton(side,text='启用剪切预览 / Enable clipping',variable=enabled,command=clip_toggle)
@@ -169,10 +190,12 @@ def gui():
             clip_valid=restore
             clip_note.set(str(error)+'\n已保留上次预览 / Previous preview kept')
             if restore:show_clip_box()
+            if not restore:flat_panel.invalidate()
             sync_controls()
             return False
         if slider_drag and changed:slider_changed=True
         clip_valid=True
+        if changed:flat_panel.invalidate()
         clip_note.set('')
         sync_controls()
         if changed:command()
@@ -208,6 +231,7 @@ def gui():
         if undo:
             if clip_valid:clip_history.undo()
         else:clip_history.edit(clip_history.original)
+        flat_panel.invalidate()
         clip_valid=True
         show_clip_box();clip_note.set('');sync_controls();command()
     reset_clip_btn=ttk.Button(side,text='重置范围 / Reset bounds',command=restore_clip)
@@ -238,12 +262,13 @@ def gui():
         current=ready and source.get()==str(loaded_source)
         def switch(widget, available):
             widget.configure(state='normal' if available else 'disabled')
-        for widget in (file_btn,folder_btn,recent_btn,entry,target_entry,output_btn):
+        for widget in (file_btn,folder_btn,las_btn,recent_btn,entry,target_entry,output_btn):
             switch(widget,not blocked)
         switch(open_btn,not blocked and bool(source.get().strip()))
         switch(export_btn,not blocked and bool(source.get().strip()) and (not ready or current))
         switch(crop_btn,not blocked and current and enabled.get() and clip_valid)
         switch(snapshot_btn,not blocked and ready)
+        switch(point_entry,ready and point_kind=='points')
         for widget in (*view_buttons,wire_btn):
             switch(widget,ready)
         switch(cancel_btn,blocked and not closing)
@@ -254,6 +279,8 @@ def gui():
         switch(undo_clip_btn,ready and not blocked and (not clip_valid or bool(clip_history.history)))
         combo.configure(state='disabled' if blocked else 'readonly')
         video_panel.set_busy(blocked or not current)
+        flat_panel.set_context(bool(current and loaded_source.suffix.lower()=='.las'),
+                               enabled.get() and clip_valid,blocked)
     def busy(active):
         nonlocal task_active
         task_active=active
@@ -273,17 +300,21 @@ def gui():
             import shutil
             shutil.rmtree(ipc,ignore_errors=True);ipc=None
     def start_viewer(path,original,default_target):
-        nonlocal viewer,viewer_log,ipc,loaded_source,state_read,bounds,clip_history,clip_valid,pending
+        nonlocal viewer,viewer_log,ipc,loaded_source,state_read,bounds,clip_history,clip_valid,pending,point_kind
         if original!=loaded_source:video_panel.reset()
         if pending is not None:root.after_cancel(pending);pending=None
         stop_viewer();bounds=None;clip_history=None;clip_valid=True;enabled.set(False);clip_note.set('')
         loaded_source=original;state_read=False
         if default_target is not None:target.set(str(default_target))
         measure_text.set('正在打开模型 / Opening model')
+        point_kind=None
+        flat_panel.reset('墙面分析支持 LAS / Wall analysis supports LAS')
         ipc=Path(tempfile.mkdtemp(prefix='share_view_'));root.update_idletasks()
         write_json(ipc/'job.json',{'source':str(path),'parent':viewport.winfo_id()})
         if path.suffix=='.spoints':
             info=json.loads(path.read_text(encoding='utf-8'))
+            point_kind=info['kind']
+            if original.suffix.lower()=='.las':flat_panel.info.set(f'LAS · {info["source_count"]:,} 点 / points\n预览 / Preview: {info["count"]:,}')
             clip_description.set(f'按点／高斯中心保留，边界高斯保持完整。\nKeep centers inside; Gaussians stay intact.\n\n预览 {info["count"]:,} / {info["source_count"]:,} 点\nPreview points; exports use all records.\n原格式裁剪保留全部字段。\nSource-format crop preserves all fields.')
         else:clip_description.set('保留盒内部分；切面不自动封口。\nKeep inside; cut surfaces stay open.\n\n缓存贴图 ≤ 512 px；导出保留原图。\nCached textures ≤ 512 px; exports use originals.')
         env=os.environ.copy();env['PATH']=str(RUNTIME)+os.pathsep+env.get('PATH','');env['OSG_LIBRARY_PATH']=str(RUNTIME/'osgPlugins-3.6.5')
@@ -401,6 +432,38 @@ def gui():
         measure_reset+=1
         measure_text.set('请选择第一点 / Click the first point')
         command()
+    def select_wall():
+        if not clip_history:return
+        enabled.set(True)
+        clip_toggle()
+        notebook.select(clip_tab)
+        status.set('调整剪切盒，只保留一面墙，然后进入「墙面」分析 / Isolate one wall, then return to Wall')
+    def analyze_current_wall(unit,tolerance):
+        src=current_source()
+        if not enabled.get():raise ValueError('先选取墙面范围 / Select a wall area first')
+        if not commit_clip():raise ValueError('请修正选区范围 / Fix selection bounds')
+        box=list(clip_history.box)
+        destination=target.get().strip().strip('"')
+        if not destination:raise ValueError('请选择输出目录 / Select output directory')
+        folder=available_output(Path(destination)/'wall_analysis')
+        flat_panel.invalidate()
+        flat_panel.summary.set('正在读取选区全部原始点…\nReading all source points in selection…')
+        def task(control):
+            try:
+                report=analyze_wall(src,folder,box,unit,tolerance,control)
+                control.check();events.put(('flatness',report,100))
+            except Exception as error:
+                events.put(('flatness_error',str(error) or '已取消 / Canceled',0))
+                raise
+        launch(task)
+    flat_scroll=ttk.Scrollbar(flat_tab);flat_scroll.pack(side='right',fill='y')
+    flat_canvas=tk.Canvas(flat_tab,bg='#edf1f7',highlightthickness=0,yscrollcommand=flat_scroll.set)
+    flat_canvas.pack(fill='both',expand=True);flat_scroll.configure(command=flat_canvas.yview)
+    flat_panel=FlatnessPanel(flat_canvas,select_wall,analyze_current_wall,command,
+                             lambda:viewport.winfo_width()/max(1,viewport.winfo_height()))
+    flat_window=flat_canvas.create_window((0,0),window=flat_panel,anchor='nw')
+    flat_panel.bind('<Configure>',lambda e:flat_canvas.configure(scrollregion=flat_canvas.bbox('all')))
+    flat_canvas.bind('<Configure>',lambda e:flat_canvas.itemconfigure(flat_window,width=e.width))
     video_footer=ttk.Frame(video_tab,padding=(10,0,10,6));video_footer.pack(side='bottom',fill='x')
     video_body=ttk.Frame(video_tab);video_body.pack(fill='both',expand=True)
     video_scroll=ttk.Scrollbar(video_body);video_scroll.pack(side='right',fill='y')
@@ -413,7 +476,7 @@ def gui():
         widget=event.widget
         if widget.winfo_class() in ('TCombobox','TSpinbox'):return
         while widget is not None:
-            if widget in (canvas,video_canvas):
+            if widget in (canvas,video_canvas,flat_canvas):
                 if widget.yview()!=(0.,1.):
                     widget.yview_scroll(-max(1,abs(event.delta)//120) if event.delta>0 else max(1,abs(event.delta)//120),'units')
                     return 'break'
@@ -446,7 +509,10 @@ def gui():
             events.put(('result',(output,f'导出完成 / Export complete · {report["seconds"]:.1f} s · {output}'),100))
         launch(task)
     open_btn.configure(command=open_model);export_btn.configure(command=lambda:export_model(False));crop_btn.configure(command=lambda:export_model(True));busy(False)
-    source.trace_add('write',lambda *_:sync_controls())
+    def source_edited(*_):
+        if source.get()!=str(loaded_source):flat_panel.invalidate()
+        sync_controls()
+    source.trace_add('write',source_edited)
     entry.bind('<Return>',lambda _:open_model())
     def poll():
         nonlocal bounds,state_read,closing,clip_history,last_result
@@ -457,10 +523,17 @@ def gui():
                     if not cancel.is_set() and not closing:start_viewer(*text)
                     continue
                 if kind=='idle':busy(False);continue
+                if kind=='flatness_error':flat_panel.summary.set(text);continue
+                if kind=='flatness':
+                    if not cancel.is_set() and not closing:
+                        flat_panel.show_result(text);flat_panel.face_wall()
+                        last_result=Path(text['output'])
+                        status.set('墙面分析完成，色谱和报告已生成 / Wall analysis complete · '+str(last_result));progress.set(100);sync_controls()
+                    continue
                 if kind=='result':last_result,text=text;sync_controls()
                 if kind!='trace':status.set(text);progress.set(pct)
         except queue.Empty:pass
-        if ipc and (not state_read or notebook.select()==str(measure_tab)):
+        if ipc and (not state_read or notebook.select() in (str(measure_tab),str(flat_tab))):
             try:
                 state=json.loads((ipc/'state.json').read_text(encoding='utf-8'))
                 if state.get('ready') and not state_read:
@@ -483,6 +556,8 @@ def gui():
                     status.set('模型已打开 / Model ready · '+loaded_source.name);progress.set(100);busy(False)
                 elif 'error' in state and not state_read:
                     state_read=True;status.set('显示失败 / Viewer error: '+state['error']);sync_controls()
+                if notebook.select()==str(flat_tab) and state.get('analysis_error'):
+                    status.set('色谱显示失败 / Color preview failed · '+state['analysis_error'])
                 if state.get('ready') and notebook.select()==str(measure_tab):
                     measurement=state.get('measurement',{})
                     count=measurement.get('count',0)

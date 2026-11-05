@@ -32,6 +32,7 @@
 #include "navigation.h"
 #include "camera_controls.h"
 #include "point_scene.h"
+#include <memory>
 using json=nlohmann::json;namespace fs=std::filesystem;
 static WNDPROC osgWindowProcedure=nullptr;static WPARAM lastNativeKey=0,lastNativeChar=0;static int lastEventKey=0;static unsigned navigationSteps=0;
 static std::function<bool(unsigned)> navigationPress;
@@ -290,6 +291,9 @@ int main(int argc,char**argv){try{
  if(argc!=2)throw std::runtime_error("Expected job.json");std::ifstream jf(fs::u8path(argv[1]));json job;jf>>job;
  osg::ref_ptr<osgDB::Options> readOptions=new osgDB::Options("noRotation");
  PointScene points;osg::ref_ptr<osg::Node> model;
+ std::unique_ptr<PointScene> analysis;
+ std::string analysisSource,analysisError;
+ bool analysisVisible=false;
  if(points.load(fs::u8path(job.at("source").get<std::string>()))){model=points.node;job["bounds"]=points.bounds;}
  else model=osgDB::readRefNodeFile(job.at("source").get<std::string>(),readOptions);if(!model)throw std::runtime_error("Cannot load model");
  HWND parent=(HWND)job.at("parent").get<uint64_t>();if(!IsWindow(parent))throw std::runtime_error("Viewer parent closed");
@@ -382,7 +386,8 @@ int main(int argc,char**argv){try{
   auto vp=viewer.getCamera()->getViewport();
   double x=cursor.x+.5-vp->x()-vp->width()*.5;
   double y=cursor.y+.5-(h-vp->y()-vp->height()*.5);
-  return pickSurface(*model,points,p,x,y,vp->height(),clipBounds);
+  return analysisVisible?pickSurface(*analysis->node,*analysis,p,x,y,vp->height(),clipBounds):
+   pickSurface(*model,points,p,x,y,vp->height(),clipBounds);
  };
  mouseStart=[&](MouseMotion motion,POINT cursor,bool centerOnPoint){
   if(!insideViewport(cursor))return false;
@@ -455,7 +460,7 @@ int main(int argc,char**argv){try{
    measurement["distance"]=delta.length();
    measurement["delta"]=vec(delta);
   }
-  state({{"ready",true},{"bounds",job.value("bounds",lohi)},{"applied_seq",last},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
+  state({{"ready",true},{"bounds",job.value("bounds",lohi)},{"applied_seq",last},{"analysis_visible",analysisVisible},{"analysis_source",analysisSource},{"analysis_error",analysisError},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
  };
  auto lastState=std::chrono::steady_clock::now(),lastMove=lastState;publish();
  while(!viewer.done()&&IsWindow(parent)){
@@ -476,6 +481,28 @@ int main(int argc,char**argv){try{
     while(clip->getNumClipPlanes())clip->removeClipPlane(clip->getClipPlane(0));
     if(enabled&&!points.active)for(unsigned i=0;i<6;i++){osg::Vec4d p(0,0,0,0);p[i%3]=i<3?1:-1;p[3]=i<3?-b[i]:b[i];clip->addClipPlane(new osg::ClipPlane(i,p));}
     points.setClip(enabled,b);
+    auto nextAnalysis=command.value("analysis_source",std::string());
+    if(nextAnalysis.empty())analysisError.clear();
+    if(nextAnalysis!=analysisSource){
+     try{
+      std::unique_ptr<PointScene> next;
+      if(!nextAnalysis.empty()){
+       next=std::make_unique<PointScene>();
+       if(!next->load(fs::u8path(nextAnalysis))||next->gaussian)throw std::runtime_error("Invalid analysis preview");
+       gc->makeCurrent();next->checkProgram(*gc->getState());gc->releaseContext();
+      }
+      if(analysis)scene->removeChild(analysis->node);
+      analysis=std::move(next);analysisSource=nextAnalysis;analysisError.clear();
+      if(analysis)scene->addChild(analysis->node);
+     }catch(const std::exception& error){analysisError=error.what();gc->releaseContext();}
+    }
+    bool nextVisible=analysis&&analysisSource==nextAnalysis&&command.value("analysis_visible",false);
+    if(nextVisible!=analysisVisible){lastPickedPoint.reset();measureCount=0;measureHit.reset();refreshRuler();}
+    analysisVisible=nextVisible;
+    model->setNodeMask(analysisVisible?0u:~0u);
+    if(analysis){analysis->node->setNodeMask(analysisVisible?~0u:0u);analysis->setClip(enabled,b);}
+    float pointSize=command.value("point_size",2.f);
+    points.setPointSize(pointSize);if(analysis)analysis->setPointSize(pointSize);
     double speed=command.value("navigation_speed",navigationSpeed);if(std::isfinite(speed)&&speed>0&&speed<=100000)navigationSpeed=speed;
     double sensitivity=command.value("mouse_sensitivity",mouseSensitivity);if(std::isfinite(sensitivity)&&sensitivity>=.1&&sensitivity<=3.)mouseSensitivity=sensitivity;
     if(command.contains("move")){
@@ -489,7 +516,11 @@ int main(int argc,char**argv){try{
     scene->getOrCreateStateSet()->setAttributeAndModes(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK,command.value("wire",false)?osg::PolygonMode::LINE:osg::PolygonMode::FILL));
     std::string view=command.value("view",std::string());
     if(!view.empty())lastPickedPoint.reset();
-    if(view=="fit")viewer.home();
+    if(view=="fit"&&analysisVisible){
+     auto p=pose();auto viewport=viewer.getCamera()->getViewport();
+     fitClipBox(p,analysis->fitBounds,viewport->width()/viewport->height());
+     manip->applyPose(p.eye,p.center,p.up);
+    }else if(view=="fit")viewer.home();
     else if(view=="clip"&&clipBounds.valid()){
      auto p=pose();
      auto viewport=viewer.getCamera()->getViewport();
@@ -527,7 +558,9 @@ int main(int argc,char**argv){try{
    auto delta=navigationDelta(center-eye,up,held('D')-held('A'),held('W')-held('S'),held('Q')-held('E'),speed,dt);
    if(delta.length2()>0)manip->applyPose(eye+delta,center+delta,up);
   }
-  viewer.advance();viewer.eventTraversal();viewer.updateTraversal();points.update(viewer.getCamera());viewer.renderingTraversals();
+  viewer.advance();viewer.eventTraversal();viewer.updateTraversal();points.update(viewer.getCamera());
+  if(analysisVisible)analysis->update(viewer.getCamera());
+  viewer.renderingTraversals();
   if(snapshot->image){
    bool saved=osgDB::writeImageFile(*snapshot->image,"snapshot.png");
    snapshot->image=nullptr;
