@@ -1,6 +1,14 @@
-# SHARE3DCAM Mesh Studio 1.5.4 · 模型工作台
+# SHARE3DCAM Mesh Studio 1.6.0 · 模型工作台
 
 SHARE3DCAM 电商销售中心 / SHARE3DCAM E-commerce Sales Center
+
+## 1.6.0 日常查看与交付 / View and deliver
+
+- **直接打开 / Open**：选文件、选文件夹或从“最近”选模型后立即打开。粘贴路径后可按回车。“最近”记录本机最近成功打开的 8 个模型。
+- **剪切 / Clip**：同一轴的最小和最大值放在一起。启用剪切后可“聚焦盒内”，用“撤回”恢复上一步范围。无效的手动输入保留上次预览，修正后才能导出盒内成果。
+- **测量 / Measure**：左键依次点两处，查看直线距离与 XYZ 差值。拖动仍可绕点旋转。距离按源坐标单位显示，使用当前预览拾取。
+- **截图 / PNG**：保存当前三维视图，包含可见测量线和剪切边框。尺寸取当前视口。
+- **输出 / Output**：重复导出时保留原成果，自动使用新的编号目录。通过“打开成果目录”进入最近一次成功输出的位置。
 
 ## 1.5.4 鼠标控制 / Mouse controls
 
@@ -109,7 +117,7 @@ OBJ 坐标、UV 和法线写出使用双精度可往返十进制精度（17 位�
 1. 双击 `MeshConverter.exe`，选择模型文件（3D Tiles 选 `tileset.json`，OSGB 选 `Model.osgb`），点击“打开 / Open”。
 2. 左键绕点旋转、右键平移、滚轮指向缩放、左键双击居中。大模型首次生成缓存时可取消，完成后显示模型。
 3. 勾选“启用六面剪切 / Enable clipping”，调整 X/Y/Z 最小值和最大值。右侧面板可以拖动滚动条，底部有重置按钮。
-4. 指定独立的新输出目录，选择输出格式，点击“导出盒内模型 / Export clipped”。未开启剪切盒时，请使用“转换完整模型 / Export full”。
+4. 指定输出目录，选择格式后点击“导出盒内模型 / Export clipped”。导出整份数据时使用“转换完整模型 / Export full”。已有成果时会生成新的编号目录。
 
 网格 PLY 支持本组 binary_little_endian 三角网格及逐面 `texcoord` / `texnumber` / `TextureFile`；点／高斯 PLY 支持见 1.5.0。STL 支持本组 binary STL；OBJ 支持三角面、正负索引、MTL 和基础颜色贴图（不支持 map_Kd 变换选项）。不是所有第三方格式变体都适用。XML、MTL、JPEG、PNG、KTX2、JSON 等辅助文件随模型读取，不作为独立三维模型打开。
 

@@ -19,6 +19,7 @@
 #include <osg/ComputeBoundsVisitor>
 #include <osg/PagedLOD>
 #include <osgDB/ReadFile>
+#include <osgDB/WriteFile>
 #include <fstream>
 #include <filesystem>
 #include <thread>
@@ -26,6 +27,7 @@
 #include <cmath>
 #include <functional>
 #include <optional>
+#include <array>
 #include "json.hpp"
 #include "navigation.h"
 #include "camera_controls.h"
@@ -36,8 +38,10 @@ static std::function<bool(unsigned)> navigationPress;
 static std::function<bool(MouseMotion,POINT,bool)> mouseStart;
 static std::function<void(MouseMotion,double,double)> mouseDrag;
 static std::function<void()> mouseEnd;
+static std::function<void()> measureClick;
 static std::function<void(POINT,double)> mouseWheel;
 static UINT dragButton=0;static POINT dragPoint{};static MouseMotion dragMotion=MouseMotion::Orbit;
+static bool measureMode=false,dragMoved=false;
 void stopMouseDrag(HWND window){
  if(dragButton&&mouseEnd)mouseEnd();
  dragButton=0;
@@ -45,8 +49,13 @@ void stopMouseDrag(HWND window){
 }
 void updateMouseDrag(LPARAM detail){
  POINT next{GET_X_LPARAM(detail),GET_Y_LPARAM(detail)};
+ if(measureMode&&dragMotion==MouseMotion::Orbit&&!dragMoved&&
+    std::abs(next.x-dragPoint.x)<=3&&std::abs(next.y-dragPoint.y)<=3)return;
  auto previous=dragPoint;dragPoint=next;
- if(mouseDrag&&(next.x!=previous.x||next.y!=previous.y))mouseDrag(dragMotion,next.x-previous.x,next.y-previous.y);
+ if(mouseDrag&&(next.x!=previous.x||next.y!=previous.y)){
+  dragMoved=true;
+  mouseDrag(dragMotion,next.x-previous.x,next.y-previous.y);
+ }
 }
 LRESULT CALLBACK navigationWindowProcedure(HWND window,UINT message,WPARAM key,LPARAM detail){
  if(message==WM_LBUTTONDOWN||message==WM_RBUTTONDOWN||message==WM_MBUTTONDOWN||message==WM_LBUTTONDBLCLK||message==WM_RBUTTONDBLCLK||message==WM_MBUTTONDBLCLK){
@@ -57,6 +66,7 @@ LRESULT CALLBACK navigationWindowProcedure(HWND window,UINT message,WPARAM key,L
   bool shift=(key&MK_SHIFT)!=0;
   dragMotion=left&&!shift?MouseMotion::Orbit:(right&&shift?MouseMotion::Look:MouseMotion::Pan);
   dragButton=left?MK_LBUTTON:(right?MK_RBUTTON:MK_MBUTTON);
+  dragMoved=false;
   SetCapture(window);
   if(!mouseStart||!mouseStart(dragMotion,dragPoint,message==WM_LBUTTONDBLCLK&&!shift))stopMouseDrag(window);
   return 0;
@@ -68,7 +78,12 @@ LRESULT CALLBACK navigationWindowProcedure(HWND window,UINT message,WPARAM key,L
  if(message==WM_LBUTTONUP||message==WM_RBUTTONUP||message==WM_MBUTTONUP){
   UINT released=message==WM_LBUTTONUP?MK_LBUTTON:(message==WM_RBUTTONUP?MK_RBUTTON:MK_MBUTTON);
   // Windows may coalesce the final move while a large model is picking or paging.
-  if(dragButton==released){updateMouseDrag(detail);stopMouseDrag(window);}return 0;
+  if(dragButton==released){
+   updateMouseDrag(detail);
+   if(measureMode&&!dragMoved&&dragMotion==MouseMotion::Orbit&&measureClick)measureClick();
+   stopMouseDrag(window);
+  }
+  return 0;
  }
  if(message==WM_CAPTURECHANGED||message==WM_KILLFOCUS||message==WM_CANCELMODE)stopMouseDrag(window);
  if(message==WM_MOUSEWHEEL){
@@ -94,6 +109,38 @@ struct CameraManipulator:osgGA::TrackballManipulator {
 };
 
 constexpr double pickNear=.01,pickFar=100000.;
+
+// Read the native viewport before swapping buffers, even if another window overlaps it.
+struct ViewSnapshot : osg::Camera::DrawCallback {
+ mutable bool requested=false;
+ mutable osg::ref_ptr<osg::Image> image;
+ void operator()(osg::RenderInfo& info)const override{
+  if(!requested)return;
+  requested=false;
+  auto viewport=info.getCurrentCamera()->getViewport();
+  image=new osg::Image;
+  image->readPixels(int(viewport->x()),int(viewport->y()),int(viewport->width()),int(viewport->height()),GL_RGB,GL_UNSIGNED_BYTE,1);
+ }
+};
+
+void fitClipBox(MouseCamera& camera,const osg::BoundingBoxd& box,double aspect){
+ auto forward=camera.center-camera.eye;
+ if(!box.valid()||forward.normalize()<1e-10||aspect<=0)return;
+ auto right=forward^camera.up;
+ if(right.normalize()<1e-10)return;
+ auto up=right^forward;
+ const double tanY=std::tan(osg::DegreesToRadians(camera.fovy)*.5);
+ auto center=box.center();
+ double depth=pickNear*3.;
+ for(unsigned corner=0;corner<8;corner++){
+  auto offset=box.corner(corner)-center;
+  double span=std::max(std::abs(offset*right)/(tanY*aspect),std::abs(offset*up)/tanY);
+  depth=std::max(depth,span*1.12-offset*forward+pickNear);
+ }
+ camera.eye=center-forward*depth;
+ camera.center=center;
+ camera.up=up;
+}
 
 std::optional<osg::Vec3d> pickSurface(osg::Node& model,const PointScene& points,
                                      const MouseCamera& camera,double x,double y,double height,
@@ -177,7 +224,11 @@ struct DisplayMaterials:osg::NodeVisitor {
  }
  bool done=false;
 };
-void state(json value){std::ofstream f("state.tmp");f<<value.dump();f.close();MoveFileExW(L"state.tmp",L"state.json",MOVEFILE_REPLACE_EXISTING);}
+void writeState(const json& value,const wchar_t* destination=L"state.json"){
+ std::ofstream f("state.tmp");f<<value.dump();f.close();
+ MoveFileExW(L"state.tmp",destination,MOVEFILE_REPLACE_EXISTING);
+}
+void state(const json& value){writeState(value);}
 int main(int argc,char**argv){try{
  if(argc==2&&std::string(argv[1])=="--test-mouse-controls"){
   MouseCamera initial{{0,-5,0},{0,0,0},{0,0,1},35.};json result;
@@ -263,6 +314,29 @@ int main(int argc,char**argv){try{
  markerStyle->setAttribute(new osg::Point(8.f));
  markerStyle->setRenderBinDetails(20,"RenderBin");
  marker->addChild(markerNode);marker->setNodeMask(0);scene->addChild(marker);
+ auto ruler=new osg::MatrixTransform;
+ auto rulerNode=new osg::Geode;
+ auto rulerGeometry=new osg::Geometry;
+ auto rulerVertices=new osg::Vec3Array(2);
+ auto rulerColors=new osg::Vec4Array;
+ rulerColors->push_back(osg::Vec4(.2,.85,1.,1.));
+ auto rulerDots=new osg::DrawArrays(GL_POINTS,0,0);
+ auto rulerLine=new osg::DrawArrays(GL_LINES,0,0);
+ rulerGeometry->setVertexArray(rulerVertices);
+ rulerGeometry->setColorArray(rulerColors,osg::Array::BIND_OVERALL);
+ rulerGeometry->setUseDisplayList(false);
+ rulerGeometry->addPrimitiveSet(rulerDots);
+ rulerGeometry->addPrimitiveSet(rulerLine);
+ rulerNode->addDrawable(rulerGeometry);
+ auto rulerStyle=rulerNode->getOrCreateStateSet();
+ rulerStyle->setMode(GL_LIGHTING,osg::StateAttribute::OFF);
+ rulerStyle->setMode(GL_DEPTH_TEST,osg::StateAttribute::OFF);
+ rulerStyle->setAttribute(new osg::Point(9.f));
+ rulerStyle->setAttribute(new osg::LineWidth(2.f));
+ rulerStyle->setRenderBinDetails(21,"RenderBin");
+ ruler->addChild(rulerNode);ruler->setNodeMask(0);scene->addChild(ruler);
+ osg::ref_ptr<ViewSnapshot> snapshot=new ViewSnapshot;
+ viewer.getCamera()->setFinalDrawCallback(snapshot);
  auto manip=new CameraManipulator;
  // Native input below owns all mouse gestures; never continue spinning on release.
  manip->setAllowThrow(false);
@@ -280,6 +354,22 @@ int main(int argc,char**argv){try{
  long long last=-1;int frames=0;double fovy=35.,fixedAspect=0.,navigationSpeed=1.5,mouseSensitivity=1.;unsigned mouseSteps=0;
  osg::BoundingBoxd clipBounds;
  std::optional<osg::Vec3d> lastPickedPoint;
+ std::optional<osg::Vec3d> measureHit;
+ std::array<osg::Vec3d,2> measurePoints;
+ unsigned measureCount=0;
+ bool measureMiss=false;
+ long long measureReset=0;
+ std::string snapshotId;
+ auto refreshRuler=[&](){
+  ruler->setNodeMask(measureMode&&measureCount?~0u:0u);
+  if(!measureCount)return;
+  ruler->setMatrix(osg::Matrixd::translate(measurePoints[0]));
+  (*rulerVertices)[0].set(0,0,0);
+  (*rulerVertices)[1]=measureCount==2?osg::Vec3(measurePoints[1]-measurePoints[0]):osg::Vec3();
+  rulerDots->setCount(measureCount);
+  rulerLine->setCount(measureCount==2?2:0);
+  rulerGeometry->dirtyBound();
+ };
  osg::Vec3d dragPivot;
  double panDepth=0.;
  auto pose=[&](){MouseCamera p;manip->getTransformation(p.eye,p.center,p.up);p.fovy=fovy;return p;};
@@ -299,6 +389,7 @@ int main(int argc,char**argv){try{
   if(motion==MouseMotion::Look)return true;
   auto p=pose();
   auto hit=pick(p,cursor);
+  measureHit=motion==MouseMotion::Orbit?hit:std::nullopt;
   if(hit)lastPickedPoint=hit;
   auto forward=p.center-p.eye;
   forward.normalize();
@@ -307,7 +398,7 @@ int main(int argc,char**argv){try{
      (*lastPickedPoint-p.eye)*forward>pickNear)pivot=*lastPickedPoint;
   dragPivot=pivot;
   panDepth=(pivot-p.eye)*forward;
-  if(centerOnPoint&&hit){
+  if(centerOnPoint&&hit&&!measureMode){
    centerMouseCamera(p,*hit);
    manip->applyPose(p.eye,p.center,p.up);mouseSteps++;
   }
@@ -326,6 +417,14 @@ int main(int argc,char**argv){try{
   manip->applyPose(p.eye,p.center,p.up);mouseSteps++;
  };
  mouseEnd=[&](){marker->setNodeMask(0);};
+ measureClick=[&](){
+  measureMiss=!measureHit;
+  if(!measureHit)return;
+  if(measureCount&&(*measureHit-measurePoints[measureCount-1]).length2()<=1e-20)return;
+  if(measureCount==2)measureCount=0;
+  measurePoints[measureCount++]=*measureHit;
+  refreshRuler();
+ };
  mouseWheel=[&](POINT cursor,double steps){
   if(!insideViewport(cursor))return;
   auto p=pose();
@@ -334,6 +433,10 @@ int main(int argc,char**argv){try{
   manip->applyPose(p.eye,p.center,p.up);mouseSteps++;
  };
  navigationPress=[&](unsigned key){
+  if(key==VK_ESCAPE&&measureMode){
+   measureCount=0;measureMiss=false;refreshRuler();
+   return true;
+  }
   if(key>='A'&&key<='Z')key+=32;
   double right=(key=='d')-(key=='a'),forward=(key=='w')-(key=='s'),vertical=(key=='q')-(key=='e');
   if(!right&&!forward&&!vertical)return false;
@@ -343,14 +446,33 @@ int main(int argc,char**argv){try{
   manip->applyPose(eye+delta,center+delta,up);lastEventKey=key;navigationSteps++;return true;
  };
  auto projection=[&](){int vw=w,vh=h;if(fixedAspect>0){if(double(w)/h>fixedAspect)vw=std::max(1,int(h*fixedAspect));else vh=std::max(1,int(w/fixedAspect));}viewer.getCamera()->setViewport((w-vw)/2,(h-vh)/2,vw,vh);viewer.getCamera()->setProjectionMatrixAsPerspective(fovy,fixedAspect>0?fixedAspect:double(w)/h,.01,100000.);};
- auto publish=[&](){osg::Vec3d eye,center,up;manip->getTransformation(eye,center,up);state({{"ready",true},{"bounds",job.value("bounds",lohi)},{"applied_seq",last},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"camera",{{"eye",{eye.x(),eye.y(),eye.z()}},{"center",{center.x(),center.y(),center.z()}},{"up",{up.x(),up.y(),up.z()}},{"fovy",fovy}}}});};
+ auto publish=[&](){
+  auto p=pose();
+  auto vec=[](const osg::Vec3d& v){return json::array({v.x(),v.y(),v.z()});};
+  json measurement={{"count",measureCount},{"miss",measureMiss}};
+  if(measureCount==2){
+   auto delta=measurePoints[1]-measurePoints[0];
+   measurement["distance"]=delta.length();
+   measurement["delta"]=vec(delta);
+  }
+  state({{"ready",true},{"bounds",job.value("bounds",lohi)},{"applied_seq",last},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
+ };
  auto lastState=std::chrono::steady_clock::now(),lastMove=lastState;publish();
  while(!viewer.done()&&IsWindow(parent)){
   GetClientRect(parent,&r);if(r.right!=w||r.bottom!=h){w=std::max(10L,r.right);h=std::max(10L,r.bottom);SetWindowPos(child,nullptr,0,0,w,h,SWP_NOZORDER);gc->resized(0,0,w,h);projection();}
   if(frames++%3==0){try{std::ifstream f("command.json");json command;if(f){f>>command;long long seq=command.value("seq",0LL);if(seq!=last){last=seq;if(command.value("quit",false))break;
     if(command.contains("aspect")){double next=command.at("aspect");if(std::isfinite(next)&&next>=0&&next<=10){fixedAspect=next;projection();}}
     bool enabled=command.value("enabled",false);auto b=command.value("box",std::vector<double>{-1,-1,-1,1,1,1});
-    clipBounds.init();if(enabled&&b.size()==6)clipBounds.set(b[0],b[1],b[2],b[3],b[4],b[5]);
+    if(b.size()!=6||!std::all_of(b.begin(),b.end(),[](double v){return std::isfinite(v);})||
+       b[0]>=b[3]||b[1]>=b[4]||b[2]>=b[5])throw std::runtime_error("Invalid clip bounds");
+    auto previousClip=clipBounds;
+    clipBounds.init();if(enabled)clipBounds.set(b[0],b[1],b[2],b[3],b[4],b[5]);
+    bool nextMeasure=command.value("measure",false);
+    auto reset=command.value("measure_reset",0LL);
+    if(nextMeasure!=measureMode||reset!=measureReset||clipBounds!=previousClip){
+     measureMode=nextMeasure;measureReset=reset;measureCount=0;measureMiss=false;measureHit.reset();
+     refreshRuler();
+    }
     while(clip->getNumClipPlanes())clip->removeClipPlane(clip->getClipPlane(0));
     if(enabled&&!points.active)for(unsigned i=0;i<6;i++){osg::Vec4d p(0,0,0,0);p[i%3]=i<3?1:-1;p[3]=i<3?-b[i]:b[i];clip->addClipPlane(new osg::ClipPlane(i,p));}
     points.setClip(enabled,b);
@@ -365,7 +487,19 @@ int main(int argc,char**argv){try{
     }
     box->setNodeMask(command.value("showBox",false)?~0u:0u);unsigned at=0;for(int axis=0;axis<3;axis++)for(int j=0;j<4;j++){osg::Vec3 a,c;for(int k=0;k<3;k++)a[k]=c[k]=b[k];int a1=(axis+1)%3,a2=(axis+2)%3;a[a1]=c[a1]=b[a1+((j&1)?3:0)];a[a2]=c[a2]=b[a2+((j&2)?3:0)];c[axis]=b[axis+3];(*vertices)[at++]=a;(*vertices)[at++]=c;}vertices->dirty();geom->dirtyBound();geom->dirtyDisplayList();
     scene->getOrCreateStateSet()->setAttributeAndModes(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK,command.value("wire",false)?osg::PolygonMode::LINE:osg::PolygonMode::FILL));
-    std::string view=command.value("view",std::string());if(!view.empty())lastPickedPoint.reset();if(view=="fit")viewer.home();else if(!view.empty()){auto c=sphere.center();double d=std::max(1.f,sphere.radius())*3.5;osg::Vec3d eye=c,up(0,0,1);if(view=="top"){eye.z()+=d;up.set(0,1,0);}else if(view=="front")eye.y()-=d;else eye.x()+=d;manip->setTransformation(eye,c,up);}
+    std::string view=command.value("view",std::string());
+    if(!view.empty())lastPickedPoint.reset();
+    if(view=="fit")viewer.home();
+    else if(view=="clip"&&clipBounds.valid()){
+     auto p=pose();
+     auto viewport=viewer.getCamera()->getViewport();
+     fitClipBox(p,clipBounds,viewport->width()/viewport->height());
+     manip->applyPose(p.eye,p.center,p.up);
+    }else if(view=="top"||view=="front"||view=="right"){
+     auto c=sphere.center();double d=std::max(1.f,sphere.radius())*3.5;osg::Vec3d eye=c,up(0,0,1);
+     if(view=="top"){eye.z()+=d;up.set(0,1,0);}else if(view=="front")eye.y()-=d;else eye.x()+=d;
+     manip->applyPose(eye,c,up);
+    }
     if(command.contains("camera")){
      auto& camera=command.at("camera");auto vec=[&](const char* key){auto a=camera.at(key).get<std::vector<double>>();if(a.size()!=3||!std::all_of(a.begin(),a.end(),[](double v){return std::isfinite(v);}))throw std::runtime_error("Invalid camera vector");return osg::Vec3d(a[0],a[1],a[2]);};
      auto eye=vec("eye"),center=vec("center"),up=vec("up");double nextFov=camera.value("fovy",35.);
@@ -373,6 +507,17 @@ int main(int argc,char**argv){try{
     }
    }}}catch(...){}}
   if(frames%30==0){DisplayMaterials materials;model->accept(materials);}
+  if(frames%3==0){
+   try{
+    std::ifstream input("snapshot_request.json");json request;
+    if(input>>request){
+     auto id=request.at("id").get<std::string>();
+     if(!id.empty()&&id!=snapshotId&&last>=request.value("after_seq",-1LL)){
+      snapshotId=id;snapshot->requested=true;
+     }
+    }
+   }catch(const std::exception&){}
+  }
   auto now=std::chrono::steady_clock::now();double dt=std::chrono::duration<double>(now-lastMove).count();lastMove=now;
   // Focus stays with text fields until the user clicks inside the viewport.
   if(GetFocus()==child&&GetForegroundWindow()==GetAncestor(parent,GA_ROOT)){
@@ -382,8 +527,15 @@ int main(int argc,char**argv){try{
    auto delta=navigationDelta(center-eye,up,held('D')-held('A'),held('W')-held('S'),held('Q')-held('E'),speed,dt);
    if(delta.length2()>0)manip->applyPose(eye+delta,center+delta,up);
   }
-  viewer.advance();viewer.eventTraversal();viewer.updateTraversal();points.update(viewer.getCamera());viewer.renderingTraversals();if(now-lastState>=std::chrono::milliseconds(100)){publish();lastState=now;}std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  viewer.advance();viewer.eventTraversal();viewer.updateTraversal();points.update(viewer.getCamera());viewer.renderingTraversals();
+  if(snapshot->image){
+   bool saved=osgDB::writeImageFile(*snapshot->image,"snapshot.png");
+   snapshot->image=nullptr;
+   writeState({{"id",snapshotId},{"error",!saved}},L"snapshot_result.json");
+  }
+  if(now-lastState>=std::chrono::milliseconds(100)){publish();lastState=now;}
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
  }
- stopMouseDrag(child);mouseStart={};mouseDrag={};mouseEnd={};mouseWheel={};navigationPress={};
+ stopMouseDrag(child);mouseStart={};mouseDrag={};mouseEnd={};measureClick={};mouseWheel={};navigationPress={};
  viewer.setDone(true);return 0;
 }catch(std::exception&e){state({{"error",e.what()}});std::cerr<<e.what();return 1;}}
