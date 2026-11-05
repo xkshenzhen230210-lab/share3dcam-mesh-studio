@@ -1,6 +1,10 @@
-# SHARE3DCAM Mesh Studio 1.7.0 · 模型工作台
+# SHARE3DCAM Mesh Studio 1.7.1 · 模型工作台
 
 SHARE3DCAM 电商销售中心 / SHARE3DCAM E-commerce Sales Center
+
+## 1.7.1 LAS 裁剪兼容修复 / LAS crop compatibility
+
+修复部分实际 LAS 文件裁剪时提示“LAS VLR 布局发生变化”的问题。附加记录标识中的结束符后若有残留填充字节，现在能正确识别，并原样保留这些字节。坐标、颜色、分类、法向等全部选中点字段及附加记录继续在后台完整核对。
 
 ## 1.7.0 LAS 导入与墙面平整度 / LAS and wall analysis
 

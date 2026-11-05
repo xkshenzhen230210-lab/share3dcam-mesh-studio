@@ -151,6 +151,38 @@ class PointDataTests(unittest.TestCase):
             self.assertEqual(doc['stride_floats'], 7)
             self.assertEqual(doc['count'], 3)
 
+    def test_las_crop_preserves_vlr_ids_with_bytes_after_null_terminator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            header = laspy.LasHeader(point_format=7, version='1.4')
+            header.add_extra_dim(laspy.ExtraBytesParams(name='NormalX', type='f8'))
+            header.evlrs = VLRList([laspy.VLR(user_id='TEST', record_id=43,
+                                            record_data=b'original-evlr')])
+            las = laspy.LasData(header)
+            las.x, las.y, las.z = [0, 2], [0, 0], [1, 1]
+            las.red = [65535, 123]
+            las.NormalX = [0.1234567890123, -0.25]
+            source = root/'source.las'
+            las.write(source)
+            regions = point_data._las_vlr_regions(source)
+            with source.open('r+b') as stream:
+                for (extended, _, _), offset, _ in regions:
+                    stream.seek(offset+2)
+                    stream.write(b'TEST\0padding1234' if extended else b'LASF_Spec\0pplica')
+            original = source.read_bytes()
+            result = crop_points(source, root/'out', [-1, -1, 0, 1, 1, 2], Quiet())
+            out = laspy.read(result['output'])
+            self.assertEqual(out.points.array.tobytes(), las.points.array[:1].tobytes())
+            self.assertEqual(source.read_bytes(), original)
+            written = Path(result['output']).read_bytes()
+            written_regions = point_data._las_vlr_regions(result['output'])
+            self.assertEqual(len(written_regions), len(regions))
+            for (_, old_offset, length), (_, new_offset, new_length) in zip(
+                    regions, written_regions):
+                self.assertEqual(length, new_length)
+                self.assertEqual(original[old_offset:old_offset+length],
+                                 written[new_offset:new_offset+length])
+
     def test_preview_sampling_is_global_bounded_and_full_mode_keeps_all(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

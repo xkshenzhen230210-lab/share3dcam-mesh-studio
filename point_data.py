@@ -451,7 +451,10 @@ def _las_vlr_regions(path):
                 header = stream.read(header_size)
                 if len(header) != header_size:
                     raise ValueError('LAS VLR 截断 / Truncated LAS VLR')
-                user, record_id = header[2:18].rstrip(b'\0'), struct.unpack_from('<H', header, 18)[0]
+                # IDs end at the first NUL. Some source writers leave nonzero
+                # padding after it; retain those raw bytes when restoring VLRs.
+                user = header[2:18].split(b'\0', 1)[0]
+                record_id = struct.unpack_from('<H', header, 18)[0]
                 length = struct.unpack_from('<Q' if extended else '<H', header, 20)[0]
                 if start + header_size + length > limit:
                     raise ValueError('LAS VLR 长度无效 / Invalid LAS VLR length')
