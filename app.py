@@ -8,7 +8,7 @@ from supervisor import convert_isolated,worker_main
 
 
 def main():
-    parser=argparse.ArgumentParser(description='SHARE3DCAM Mesh Studio 1.5.2: Mesh, point cloud, Gaussian splatting and video')
+    parser=argparse.ArgumentParser(description='SHARE3DCAM Mesh Studio 1.5.3: Mesh, point cloud, Gaussian splatting and video')
     parser.add_argument('--input');parser.add_argument('--output');parser.add_argument('--format',choices=['both','obj','osgb','3dtiles','source'],default='both')
     parser.add_argument('--inspect',action='store_true',help='只分析输入结构')
     parser.add_argument('--worker-job',help=argparse.SUPPRESS)

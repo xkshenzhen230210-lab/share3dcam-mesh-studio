@@ -80,6 +80,55 @@ class VideoStallTests(unittest.TestCase):
     def test_opengl_context_stall_identifies_context_and_stops_children(self):
         self.assert_stall_is_diagnosed('context','RENDER_CONTEXT_TIMEOUT')
 
+    def assert_memory_failure_stops_without_context_retry(self,error_kind,exit_before_poll):
+        original_popen=subprocess.Popen;children=[];jobs=[];caught=None
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'model.osgb';source.write_bytes(b'fake renderer fixture')
+            output=root/'memory-failed.mp4';control=Control(lambda *args:None)
+
+            def start(command,**kwargs):
+                native=Path(command[0]).stem=='mesh_render'
+                if native:
+                    job=json.loads(Path(command[1]).read_text(encoding='utf-8'));jobs.append(job)
+                    Path(job['progress']).write_text(json.dumps(dict(
+                        state='failed',phase='first_frame',frame=0,total=2,
+                        error='Native memory allocation failed',error_kind=error_kind)),encoding='utf-8')
+                    code='import sys;sys.exit(17)' if exit_before_poll else 'import time;time.sleep(60)'
+                    command=[WORKER_PYTHON,'-c',code]
+                child=original_popen(command,**kwargs);children.append(child)
+                if native and exit_before_poll:child.wait(timeout=3)
+                return child
+
+            guard=threading.Timer(2,control.event.set);guard.start()
+            try:
+                with patch.object(video.subprocess,'Popen',side_effect=start):
+                    video.render_video(source,output,keys(),control=control)
+            except Exception as error:caught=error
+            finally:
+                guard.cancel();guard.join()
+                for child in children:
+                    if child.poll() is None:child.terminate();child.wait(timeout=3)
+            self.assertIsInstance(caught,RuntimeError)
+            self.assertTrue(children)
+            self.assertTrue(all(child.poll() is not None for child in children))
+            self.assertFalse(output.exists(),'out-of-memory must not publish MP4')
+            self.assertEqual(len(jobs),1,'changing contexts cannot recover exhausted RAM or VRAM')
+            self.assertEqual(caught.kind,error_kind)
+            diagnostics=Path(caught.diagnostics_path)
+            self.assertTrue(diagnostics.is_dir())
+            failure=json.loads((diagnostics/'failure.json').read_text(encoding='utf-8'))
+            self.assertEqual(failure['stage'],'first_frame')
+            self.assertEqual(failure['error_kind'],error_kind)
+            self.assertEqual(len(failure['attempts']),1)
+            self.assertTrue(list(diagnostics.rglob('render.log')))
+            self.assertTrue(list(diagnostics.rglob('encode.log')))
+
+    def test_system_memory_failure_exited_worker_does_not_retry_context(self):
+        self.assert_memory_failure_stops_without_context_retry('system_memory',exit_before_poll=True)
+
+    def test_gpu_memory_failure_live_worker_does_not_retry_context(self):
+        self.assert_memory_failure_stops_without_context_retry('gpu_memory',exit_before_poll=False)
+
     def test_context_failure_retries_window_once_without_reducing_output_quality(self):
         original_popen=subprocess.Popen;children=[];jobs=[]
         with tempfile.TemporaryDirectory() as folder:

@@ -25,9 +25,10 @@ STAGES = {
 CONTEXT_STAGES = {'context','initializing','capabilities','first_frame'}
 
 class RenderFailure(RuntimeError):
-    def __init__(self, message, stage, frame=0):
+    def __init__(self, message, stage, frame=0, kind='runtime'):
         super().__init__(message)
         self.stage, self.frame, self.diagnostics_path = stage, frame, None
+        self.kind=kind
 
 def stop(process):
     if process is not None and process.poll() is None:
@@ -69,8 +70,8 @@ def _attempt(renderer,ffmpeg,request,work,env,control,timeouts):
                 # The encoder also exits when the renderer dies before its first
                 # bytes. Keep the native phase as the primary failure in that race.
                 if render.poll() is not None and render.returncode:
-                    raise RenderFailure('模型渲染失败 / Rendering failed: '+tail(render_log),stage,frame)
-                if current['state']=='failed': raise RenderFailure(str(current.get('error','Native renderer failed')),stage,frame)
+                    raise RenderFailure('模型渲染失败 / Rendering failed: '+tail(render_log),stage,frame,current.get('error_kind','runtime'))
+                if current['state']=='failed': raise RenderFailure(str(current.get('error','Native renderer failed')),stage,frame,current.get('error_kind','runtime'))
                 if encode.poll() is not None and encode.returncode:
                     raise RenderFailure('视频编码失败 / Encoding failed: '+tail(encode_log),'encoding',frame)
                 if render.poll() is not None and encode.poll() is not None: break
@@ -107,8 +108,8 @@ def render_stream(renderer,ffmpeg,request,work,output,env,control,timeouts):
                 attempts.append(dict(attempt=index,context_mode=mode,state='succeeded',graphics=state.get('graphics',{})))
                 return encoded,state,attempts
             except RenderFailure as error:
-                attempts.append(dict(attempt=index,context_mode=mode,state='failed',stage=error.stage,error=str(error)))
-                if index==1 and error.stage in CONTEXT_STAGES and error.frame==0:
+                attempts.append(dict(attempt=index,context_mode=mode,state='failed',stage=error.stage,error_kind=error.kind,error=str(error)))
+                if index==1 and error.stage in CONTEXT_STAGES and error.frame==0 and error.kind not in ('system_memory','gpu_memory'):
                     control.log('自动切换兼容显卡上下文重试 / Retrying compatible graphics context',35)
                     continue
                 raise
@@ -123,7 +124,7 @@ def render_stream(renderer,ffmpeg,request,work,output,env,control,timeouts):
                 for name in ('job.json','progress.json','render.log','encode.log'):
                     path=folder/name
                     if path.is_file(): shutil.copy2(path,target/name)
-            write_json(diagnostic/'failure.json',dict(state='failed',stage=stage,error=str(error),attempts=attempts,
+            write_json(diagnostic/'failure.json',dict(state='failed',stage=stage,error_kind=failure.kind,error=str(error),attempts=attempts,
                 width=request['width'],height=request['height'],fps=request['fps'],frames=len(request['frames']),
                 source=request.get('original_source',request['source']),platform=platform.platform(),processors=os.cpu_count()))
             failure.diagnostics_path=diagnostic

@@ -25,6 +25,7 @@
 #include <functional>
 #include "json.hpp"
 #include "point_scene.h"
+#include "render_memory.h"
 
 using json=nlohmann::json;
 namespace fs=std::filesystem;
@@ -48,6 +49,7 @@ void progress(const fs::path& path,const json& value){
 // transitions can then change scene detail while a frame is being exported.
 struct FullDetail {
  std::set<fs::path> active;
+ TextureMemory* memory=nullptr;
  std::function<void()> pageLoaded;
  osg::ref_ptr<osgDB::Options> options=new osgDB::Options("noRotation");
  osg::ref_ptr<osg::Node> file(fs::path path){
@@ -55,6 +57,7 @@ struct FullDetail {
   if(active.size()>=256||!active.insert(path).second)throw std::runtime_error("Cyclic or excessively deep OSGB reference: "+path.u8string());
   auto node=osgDB::readRefNodeFile(path.u8string(),options);
   if(!node)throw std::runtime_error("Cannot load model page: "+path.u8string());
+  if(memory)memory->loaded(node);
   if(pageLoaded)pageLoaded();
   auto result=walk(node,path.parent_path());active.erase(path);return result;
  }
@@ -139,7 +142,7 @@ void cameraPose(osg::Camera* camera,const json& pose,double aspect){
 
 int main(int argc,char** argv){
  fs::path progressPath;
- json graphics=json::object();std::string phase="starting";size_t completed=0;
+ json graphics=json::object(),memoryReport=json::object();std::string phase="starting",errorKind="runtime";size_t completed=0;
  try{
   _setmode(_fileno(stdout),_O_BINARY);osg::setNotifyHandler(new Diagnostics);osg::setNotifyLevel(osg::WARN);
   if(argc!=2)throw std::runtime_error("Expected render job.json");
@@ -149,12 +152,14 @@ int main(int argc,char** argv){
   if(width<16||height<16||width>3840||height>2160||width%2||height%2||!std::isfinite(fps)||fps<1||fps>120||!frames.is_array()||frames.empty())throw std::runtime_error("Invalid render dimensions, frame rate or camera frames");
   // Validate all poses before committing any output bytes to the encoder.
   osg::ref_ptr<osg::Camera> poseValidator=new osg::Camera;for(auto& pose:frames)cameraPose(poseValidator,pose,double(width)/height);
-  auto publish=[&](const std::string& next){phase=next;progress(progressPath,{{"state",phase},{"frame",completed},{"total",frames.size()},{"graphics",graphics}});};
+  auto publish=[&](const std::string& next){phase=next;memoryReport["system"]=renderMemorySnapshot();progress(progressPath,{{"state",phase},{"frame",completed},{"total",frames.size()},{"graphics",graphics},{"memory",memoryReport}});};
   publish("loading");
-  FullDetail loader;PointScene points;osg::ref_ptr<osg::Node> model;
+  TextureMemory memory(progressPath.parent_path(),job.value("optimize_memory",true));
+  FullDetail loader;loader.memory=&memory;PointScene points;osg::ref_ptr<osg::Node> model;
   size_t pages=0;loader.pageLoaded=[&](){pages++;progress(progressPath,{{"state","loading"},{"frame",0},{"pages",pages},{"total",frames.size()}});};
   if(points.load(fs::u8path(job.at("source").get<std::string>())))model=points.node;
   else model=loader.file(fs::u8path(job.at("source").get<std::string>()));publish("materials");DisplayMaterials materials;model->accept(materials);
+  memoryReport=memory.report(model);
   osg::ref_ptr<osg::ClipNode> scene=new osg::ClipNode;scene->addChild(model);
   if(job.contains("clip_box")&&!job.at("clip_box").is_null()){
    auto b=job.at("clip_box").get<std::vector<double>>();
@@ -198,12 +203,21 @@ int main(int argc,char** argv){
   GLint maxTexture=0,maxRenderbuffer=0;glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxTexture);glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE_EXT,&maxRenderbuffer);
   graphics["max_texture_size"]=maxTexture;graphics["max_renderbuffer_size"]=maxRenderbuffer;
   if(std::max(width,height)>std::min(maxTexture,maxRenderbuffer))throw std::runtime_error("Requested video size exceeds this GPU's framebuffer limit");
+  bool gpuMemoryInfo=osg::isGLExtensionSupported(context->getState()->getContextID(),"GL_NVX_gpu_memory_info");
+  auto gpuMemory=[&](){if(gpuMemoryInfo){GLint dedicated=0,available=0;glGetIntegerv(0x9047,&dedicated);glGetIntegerv(0x9049,&available);
+   if(dedicated>0)graphics["gpu_dedicated_bytes"]=int64_t(dedicated)*1024;
+   if(available>=0)graphics["gpu_available_estimate_bytes"]=int64_t(available)*1024;
+  }};gpuMemory();
   if(points.active)points.checkProgram(*context->getState());
   const size_t bytes=size_t(width)*height*3;
   for(size_t i=0;i<frames.size();i++){
    publish(i==0?"first_frame":"rendering");
    cameraPose(camera,frames[i],double(width)/height);points.update(camera);viewer.frame(double(i)/fps);
-   auto glError=glGetError();if(glError!=GL_NO_ERROR)throw std::runtime_error("OpenGL rendering failed (error "+std::to_string(glError)+"); GPU memory or framebuffer unavailable");
+   if(i==0||i%30==0||i+1==frames.size()){TextureInventory resident;model->accept(resident);memoryReport["image_bytes_after_upload"]=resident.bytes;}
+   auto glError=glGetError();
+   if(glError==GL_OUT_OF_MEMORY){errorKind="gpu_memory";throw std::runtime_error("显存分配失败 / GPU memory allocation failed (OpenGL 1285); system RAM and GPU memory are separate limits");}
+   if(glError!=GL_NO_ERROR)throw std::runtime_error("OpenGL rendering failed (error "+std::to_string(glError)+"); framebuffer unavailable");
+   if(i==0||i%30==0||i+1==frames.size())gpuMemory();
    if(image->getTotalSizeInBytes()!=bytes)throw std::runtime_error("Unexpected framebuffer byte count");
    publish("encoding");
    if(fwrite(image->data(),1,bytes,stdout)!=bytes)throw std::runtime_error("Video encoder pipe closed");
@@ -215,8 +229,11 @@ int main(int argc,char** argv){
   viewer.setDone(true);context->close();if(hidden)DestroyWindow(hidden);
   publish("succeeded");return 0;
  }catch(const std::exception& error){
-  std::cerr<<error.what()<<std::endl;
-  if(!progressPath.empty())try{progress(progressPath,{{"state","failed"},{"phase",phase},{"frame",completed},{"error",error.what()},{"graphics",graphics}});}catch(...){}
+  bool allocation=dynamic_cast<const std::bad_alloc*>(&error)!=nullptr;if(allocation)errorKind="system_memory";
+  std::string message=allocation?"系统内存分配失败 / System memory allocation failed while "+phase:error.what();
+  std::cerr<<message<<std::endl;
+  memoryReport["system"]=renderMemorySnapshot();
+  if(!progressPath.empty())try{progress(progressPath,{{"state","failed"},{"phase",phase},{"frame",completed},{"error",message},{"error_kind",errorKind},{"graphics",graphics},{"memory",memoryReport}});}catch(...){}
   return 1;
  }
 }

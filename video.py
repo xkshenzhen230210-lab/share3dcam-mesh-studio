@@ -197,7 +197,7 @@ def render_video(source,output,keys,resolution='1080p',fps=30,control=None,clip_
                     width=width,height=height,fps=fps,frames=count,duration=duration,
                     codec='h264',quality='CRF 18',textures='original',clip_box=clip_box,
                     seconds=round(time.monotonic()-started,2),checks='passed',keyframes=keys)
-        report.update(graphics=render_state.get('graphics',{}),render_attempts=attempts)
+        report.update(graphics=render_state.get('graphics',{}),memory=render_state.get('memory',{}),render_attempts=attempts)
         # Windows rename fails if another process created the destination meanwhile.
         # Explicit recheck also protects POSIX development runs in normal use.
         if output.exists():raise ValueError('视频文件已存在 / Video output already exists')
