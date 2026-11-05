@@ -28,7 +28,7 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.5.3 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.5.4 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -41,7 +41,7 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.5.3\n网格 · 点云 · 高斯 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.5.4\n网格 · 点云 · 高斯 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar();navigation_speed=tk.StringVar(value='1.5');mouse_sensitivity=tk.StringVar(value='1.0')
@@ -62,7 +62,7 @@ def gui():
     open_btn=ttk.Button(line,text='打开 / Open',style='Accent.TButton');open_btn.pack(side='left',padx=(8,0))
     ttk.Label(main,text='GLB · 3D Tiles · OSGB · OBJ · PLY/3DGS · LAS · STL',foreground='#536b85').pack(anchor='w',pady=(8,5))
     mouse_row=ttk.Frame(main);mouse_row.pack(fill='x',pady=(0,5))
-    ttk.Label(mouse_row,text='鼠标 / Mouse    左键环绕 / Orbit · 右键转头 / Look · 中键平移 / Pan · 滚轮缩放 / Zoom',foreground='#536b85').pack(side='left')
+    ttk.Label(mouse_row,text='左键绕点 / L-drag orbit · 右键平移 / R-drag pan · 滚轮指向缩放 / Zoom at cursor · 双击居中 / Double-click center',foreground='#536b85').pack(side='left')
     ttk.Label(mouse_row,text='灵敏度 / Sensitivity').pack(side='left',padx=(18,4))
     mouse_entry=ttk.Spinbox(mouse_row,from_=.1,to=3.,increment=.1,textvariable=mouse_sensitivity,width=5);mouse_entry.pack(side='left')
     help_row=ttk.Frame(main);help_row.pack(fill='x',pady=(0,7))

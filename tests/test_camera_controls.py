@@ -69,6 +69,58 @@ class CameraControlsTests(unittest.TestCase):
         orbit = self.pose('orbit')
         self.assertAlmostEqual(np.linalg.norm(orbit['eye']-orbit['center']), 5., places=8)
 
+    def test_surface_orbit_keeps_grabbed_point_at_same_screen_position(self):
+        point = np.array([1., 2., .5])
+        orbit = self.pose('surface_orbit')
+        forward = self.forward(orbit)
+        right = np.cross(forward, orbit['up'])
+        relative = point - orbit['eye']
+        depth = np.dot(relative, forward)
+        np.testing.assert_allclose([np.dot(relative, right)/depth, np.dot(relative, orbit['up'])/depth],
+                                   [1/7, .5/7], atol=1e-9, rtol=0)
+        self.assertAlmostEqual(np.linalg.norm(relative), np.linalg.norm(point-self.INITIAL_EYE), places=8)
+        # Ordinary mouse mode uses the same viewport-normalized directions and rates as PCS.
+        self.assertAlmostEqual(math.atan2(forward[0], forward[1]), 5*100/1000, places=8)
+        self.assertAlmostEqual(math.asin(forward[2]), -2*60/600, places=8)
+
+    def test_pointer_wheel_keeps_surface_point_under_cursor(self):
+        point = np.array([1., 2., .5])
+        previous = point - self.INITIAL_EYE
+        for name, zooming_in in [('surface_wheel_in', True), ('surface_wheel_out', False)]:
+            with self.subTest(pose=name):
+                pose = self.pose(name)
+                offset = point - pose['eye']
+                self.assertGreater(offset[1], 0.)
+                self.assertEqual(offset[1] < previous[1], zooming_in)
+                np.testing.assert_allclose(offset/offset[1], previous/previous[1], atol=1e-9, rtol=0)
+                np.testing.assert_allclose(self.forward(pose), [0, 1, 0], atol=1e-9, rtol=0)
+
+    def test_double_click_centers_the_hit_at_its_current_depth(self):
+        pose = self.pose('surface_center')
+        np.testing.assert_allclose(pose['center'], [1., 2., .5], atol=1e-9, rtol=0)
+        np.testing.assert_allclose(pose['eye'], [1., -5., .5], atol=1e-9, rtol=0)
+        np.testing.assert_allclose(self.forward(pose), [0, 1, 0], atol=1e-9, rtol=0)
+
+    def test_pan_at_hit_depth_follows_mouse_pixel_for_pixel(self):
+        pose = self.pose('surface_pan')
+        shift = pose['eye'] - self.INITIAL_EYE
+        meters_per_pixel = 2*7*math.tan(math.radians(35)/2)/600
+        np.testing.assert_allclose(shift, [-50*meters_per_pixel, 0., 30*meters_per_pixel], atol=1e-9, rtol=0)
+        np.testing.assert_allclose(shift, pose['center'], atol=1e-9, rtol=0)
+
+    def test_orbit_from_top_keeps_heading_and_stays_finite(self):
+        pose = self.pose('top_orbit')
+        forward = self.forward(pose)
+        self.assertGreater(forward[1], 0.)
+        self.assertLess(forward[2], -.9)
+        self.assertAlmostEqual(float(np.dot(forward, pose['up'])), 0., places=8)
+
+    def test_pointer_picks_nearest_visible_preview_geometry(self):
+        np.testing.assert_allclose(self.poses['pick_mesh'], [0., 0., 0.], atol=1e-6, rtol=0)
+        np.testing.assert_allclose(self.poses['pick_clipped_mesh'], [0., 2., 0.], atol=1e-6, rtol=0)
+        self.assertIsNone(self.poses['pick_empty'])
+        self.assertEqual(self.poses['pick_gaussian'], [0., 2., 0.])
+
     def test_look_right_x_positive(self):
         direction = self.forward(self.pose('look'))
         self.assertGreater(direction[0], .01, 'Dragging right must look toward world +X')
