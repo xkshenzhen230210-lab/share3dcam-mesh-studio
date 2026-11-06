@@ -1,5 +1,5 @@
 """Camera keyframes and full-resolution, independently verified MP4 rendering."""
-import bisect
+from functools import lru_cache
 import json
 import math
 import os
@@ -15,6 +15,7 @@ from converter import Control, RUNTIME
 from model_paths import resolve_model
 from supervisor import convert_isolated
 from video_process import render_stream
+from camera_motion import CameraPath
 
 RESOLUTIONS={'1080p':(1920,1080),'4K':(3840,2160)}
 FRAME_RATES=(24,30,60)
@@ -70,53 +71,22 @@ def validate_keyframes(keys):
     return result
 
 
-def _quaternion(matrix):
-    """Right-handed camera rotation matrix -> unit quaternion (w, x, y, z)."""
-    m=matrix;trace=float(np.trace(m))
-    if trace>0:
-        s=math.sqrt(trace+1)*2
-        q=np.array([s/4,(m[2,1]-m[1,2])/s,(m[0,2]-m[2,0])/s,(m[1,0]-m[0,1])/s])
-    else:
-        i=int(np.argmax(np.diag(m)));j=(i+1)%3;k=(i+2)%3
-        s=math.sqrt(max(0,1+m[i,i]-m[j,j]-m[k,k]))*2
-        q=np.zeros(4);q[0]=(m[k,j]-m[j,k])/s;q[i+1]=s/4
-        q[j+1]=(m[j,i]+m[i,j])/s;q[k+1]=(m[k,i]+m[i,k])/s
-    return q/np.linalg.norm(q)
+@lru_cache(maxsize=4)
+def _compiled_path(signature):
+    # Cache immutable values, never mutable lists owned by the keyframe editor.
+    keys=[dict(time=k[0],eye=list(k[1:4]),center=list(k[4:7]),up=list(k[7:10]),fovy=k[10]) for k in signature]
+    return CameraPath(keys,[_basis(key) for key in keys])
 
 
-def _rotation(q):
-    w,x,y,z=q
-    return np.array([[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)],
-                     [2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)],
-                     [2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)]])
+def camera_path(keys):
+    """Compile validated keyframes once for shared preview/export motion."""
+    signature=tuple((k['time'],*k['eye'],*k['center'],*k['up'],k['fovy']) for k in keys)
+    return _compiled_path(signature)
 
 
 def camera_at(keys,stamp):
-    """Smooth stop/start between keys; quaternion slerp avoids orbit collapse.
-
-    Keys are expected to have passed validate_keyframes. The end positions are
-    returned exactly. Interpolation preserves camera distance and roll.
-    """
-    stamp=float(stamp)
-    if not math.isfinite(stamp):raise ValueError('时间无效 / Invalid time')
-    def pose(key):return {name:list(key[name]) if name!='fovy' else key[name]
-                          for name in ('eye','center','up','fovy')}
-    if stamp<=keys[0]['time']:return pose(keys[0])
-    if stamp>=keys[-1]['time']:return pose(keys[-1])
-    i=bisect.bisect_right([key['time'] for key in keys],stamp)-1
-    a,b=keys[i:i+2]
-    if stamp==a['time']:return pose(a)
-    t=(stamp-a['time'])/(b['time']-a['time']);t=t*t*(3-2*t)
-    ra,da=_basis(a);rb,db=_basis(b);qa,qb=_quaternion(ra),_quaternion(rb)
-    dot=float(np.dot(qa,qb))
-    if dot<0:qb=-qb;dot=-dot
-    dot=min(1,max(-1,dot))
-    if dot>.9995:q=qa*(1-t)+qb*t;q/=np.linalg.norm(q)
-    else:
-        angle=math.acos(dot);q=(math.sin((1-t)*angle)*qa+math.sin(t*angle)*qb)/math.sin(angle)
-    rotation=_rotation(q);center=np.asarray(a['center'])*(1-t)+np.asarray(b['center'])*t
-    eye=center+rotation[:,2]*(da*(1-t)+db*t)
-    return dict(eye=eye.tolist(),center=center.tolist(),up=rotation[:,1].tolist(),fovy=a['fovy']*(1-t)+b['fovy']*t)
+    """Continuous motion through intermediate keys; exact key poses and holds."""
+    return camera_path(keys).at(stamp)
 
 
 def sample_frames(keys,fps):
@@ -125,7 +95,8 @@ def sample_frames(keys,fps):
     count=round(keys[-1]['time']*fps)
     if count<2:raise ValueError('视频至少需要两帧 / Video needs at least two frames')
     # Include both endpoint poses; playback duration is count/fps, rounded to a frame.
-    return [camera_at(keys,keys[-1]['time']*i/(count-1)) for i in range(count)]
+    path=camera_path(keys)
+    return [path.at(keys[-1]['time']*i/(count-1)) for i in range(count)]
 
 
 def _tool(name):

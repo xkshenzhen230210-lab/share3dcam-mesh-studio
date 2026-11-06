@@ -1,6 +1,12 @@
-# SHARE3DCAM Mesh Studio 1.8.2 · 模型工作台
+# SHARE3DCAM Mesh Studio 1.8.3 · 模型工作台
 
 SHARE3DCAM 电商销售中心 / SHARE3DCAM E-commerce Sales Center
+
+## 1.8.3 连续运镜 / Continuous camera motion
+
+视频镜头连续经过中间关键帧，首尾柔和起停，位移、转向和缩放一起平滑，避免每到一个关键帧就停车再启动。相邻关键帧使用同一视角时仍保留停留；旧版保存的相机动画可直接载入并使用新运镜。
+
+预览、拖动时间轴和导出使用同一条路径，时长和倍速设置保持一致。关键帧的时间与视角保持准确；关键帧之间改走平滑曲线，因此狭窄空间的镜头应先预览，必要时增加关键帧约束路线。
 
 ## 1.8.2 共享盘报告保存修复 / Shared-drive reports
 

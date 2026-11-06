@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from converter import write_json
-from video import camera_at, validate_keyframes
+from video import camera_at, camera_path, validate_keyframes
 from video_timing import rescale_duration, playback_keyframes
 
 
@@ -32,7 +32,7 @@ class VideoPanel(ttk.Frame):
         self.final_duration = tk.StringVar(value='实际时长 / Final: 0.00 s')
         self.hint = tk.StringVar(value='调整视角后添加关键帧。\nMove the camera, then add a keyframe.')
         ttk.Label(self, text='相机动画 / Camera animation', font=('Microsoft YaHei UI', 12, 'bold')).pack(anchor='w')
-        ttk.Label(self, text='16:9 画幅 · 平滑运镜\n16:9 framing · Smooth camera motion', foreground='#536b85').pack(anchor='w', pady=(5, 10))
+        ttk.Label(self, text='连续经过关键帧 · 首尾柔和起停\nContinuous motion · Gentle start/end', foreground='#536b85').pack(anchor='w', pady=(5, 10))
         row = ttk.Frame(self); row.pack(fill='x')
         ttk.Label(row, text='时间 / Time (s)').pack(side='left')
         self.time_entry = ttk.Spinbox(row, from_=0, to=1800, increment=.5, textvariable=self.seconds, width=9)
@@ -190,13 +190,13 @@ class VideoPanel(ttk.Frame):
         if self.play_task is not None: self.after_cancel(self.play_task); self.play_task = None
 
     def play(self):
-        keys = self.playback_keys(); self.stop()
+        keys = self.playback_keys(); path = camera_path(keys); self.stop()
         duration = keys[-1]['time']; start = self.position.get()
         if start >= duration: start = 0
         started = time.monotonic() - start
         def tick():
             value = min(duration, time.monotonic() - started)
-            self.set_camera(camera_at(keys, value))
+            self.set_camera(path.at(value))
             self.scrubbing = True; self.position.set(value); self.scrubbing = False; self.update_clock()
             self.play_task = self.after(33, tick) if value < duration else None
         tick()
