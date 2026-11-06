@@ -28,3 +28,11 @@ Analytical plane/defect statistics, geometry disconnection/corners/opposite face
 
 ## Reference
 Trimble official RealWorks 2024.00 notes document Magic Wand segmentation and inspection-map CSV export: https://help.fieldsystems.trimble.com/realworks/2024.00.htm . Product overview documents construction deviation reports: https://www.trimble.com/en/products/building-construction-field-systems/trimble-realworks . These inform workflow design, not an assertion of feature parity or benchmark superiority.
+## 1.8.1 near-wall surface correction
+
+- Isolate the selected wall in both deviation and original color views; surrounding surfaces must not occlude it.
+- Prevent sparse parallel faces bridging the sampled wall graph through tilted neighbourhood normals. Limit the candidate-plane depth step to 35 mm and full-source local support depth to 25 mm independently of along-surface spacing and report tolerance.
+- Preserve connected 30 mm defects and continuous 50 mm bowing in regression tests. Do not remove assigned outliers to improve statistics.
+- Automatically flag overlapping depth layers in a 120 mm projected cell (at least three sampled points per side, gap > 35 mm), mark intersecting zones unresolved/review, and retain candidate statistics with explicit interpretation limits.
+- Include isolated RGB, context depth section and orange overlap locations in PDF/HTML. Missing wall points remain blank and unjudged.
+- Re-run the actual Xiruiyuan LAS; previous 1.8.0 wall membership was contaminated in W003/W024 and is superseded for interpretation.

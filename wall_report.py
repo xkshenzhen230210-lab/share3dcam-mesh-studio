@@ -8,7 +8,7 @@ import numpy as np
 
 from converter import write_json
 from wall_flatness import deviation_colors
-from inspection_figures import ASSETS,FONT,overview,wall_map,region_colors
+from inspection_figures import ASSETS,FONT,overview,wall_map,wall_extraction,region_colors
 
 STATUS={'within':'容差内 / Within','outside':'存在超差 / Outside','review':'需复核 / Review'}
 NOTES=[
@@ -18,7 +18,9 @@ NOTES=[
     '判定边界：容差由使用者设置。本报告为扫描数据的平面偏差技术分析，不等同于 2 米靠尺、最小区域平整度、扫描仪测量精度或自动工程验收结论。',
     '色谱：蓝色为负偏差，绿色接近零，红色为正偏差；正负由记录的参考法向决定，不表示建筑内外。每个有点网格显示绝对偏差最大的点，空白格不插值。',
     '数据质量：低覆盖、小片边缘、归属边界附近点、较厚表面及坐标步长大于容差的区域标为需复核。点归属之后没有剔除离群点。',
-    '识别限制：空间采样决定候选表面和连通关系。未被采样捕获的孤立突起、稀疏墙面和复杂交界可能未归属；局部连接深度余量为 25 mm，另计沿表面间距。未归属点不能解释为无缺陷。',
+    '遮挡处理：墙面原色图仅显示本墙面归属点，周边表面只在剖面图中以灰色显示，不参与该墙面统计。被遮挡且没有墙面点的位置保留空白，不补面、不判为合格。',
+    '重叠检查：后台在 120 mm 投影格内检查采样点的深度分层；两侧各至少 3 点且间隙大于 35 mm 时，相关分区标为需复核，图上用橙框定位。此类数值仅是候选表面统计，不能直接判为墙体缺陷；紧贴、稀疏或未采到的物体仍可能漏检。',
+    '识别限制：空间采样决定候选表面和连通关系。采样点连接的法向深度跳变上限为 35 mm；全量点接入采样表面的局部深度余量为 25 mm，不随沿面间距扩大。未采到的孤立突起、紧贴墙面物体、稀疏表面及复杂交界仍可能误分，未归属点不能解释为无缺陷。',
     '现场使用：按总览图和分区号定位，结合原色点云及最大偏差坐标核实构件和遮挡；整改后可用同一单位、容差和分区设置复测。源坐标 Z 按竖直方向使用。',
 ]
 
@@ -57,6 +59,7 @@ def write_deliverables(folder,report,assets,control):
         _cache(folder/wall['id'],points,deviation_colors(d,report['tolerance_mm']),np.asarray(wall['centroid']),report['source'],wall['count'])
         _cache(folder/wall['id']/'original',points,assets['rgb'][labels==i],np.asarray(wall['centroid']),report['source'],wall['count'])
         wall_map(folder/f'figures/{wall["id"]}.png',wall,raster,report['tolerance_mm'],assets['metres_per_unit'])
+        wall_extraction(folder/f'figures/{wall["id"]}-extraction.png',wall,i,assets)
         # Full-resolution grid data can be independently examined; blanks are
         # represented as empty cells rather than invented zero deviations.
         nonempty=np.argwhere(raster['count']>0)
@@ -89,6 +92,8 @@ def _html(folder,report):
         sections.append(f'<section id="{w["id"]}"><h2>{w["id"]} · {escape(STATUS[w["status"]])}</h2>'
             f'<p>全量点 {w["count"]:,} · 最大绝对偏差 {w["max_abs_mm"]:.3f} mm · RMS {w["rms_mm"]:.3f} mm</p>'
             f'<img src="figures/{w["id"]}.png" alt="{w["id"]} 墙面分区偏差图">'+
+            f'<img src="figures/{w["id"]}-extraction.png" alt="{w["id"]} 单独墙面原色及周边表面深度剖面">'+
+            '<p>原色图只显示本墙面；剖面蓝色为本墙面，灰色为周边表面。橙框标记存在分层的采样位置，相关分区无法确认单一墙面。空白处不补面、不判为合格。图示为采样点，数值统计使用全部归属点。</p>'+
             table(['分区','状态','点数','最大绝对偏差 mm','RMS mm','超差比例','有点覆盖'],rows)+
             '<p>复核说明：'+escape('；'.join(w['review_reasons']) or '未触发数据质量提示。')+'</p></section>')
     index=' · '.join(f'<a href="#{w["id"]}">{w["id"]}</a>' for w in report['walls'])
@@ -140,7 +145,7 @@ def _pdf(folder,report,control):
         control.check();canvas.saveState();canvas.setFillColor(colors.HexColor('#101d30'));canvas.rect(0,A4[1]-65,A4[0],65,fill=1,stroke=0)
         canvas.drawImage(ImageReader(str(ASSETS/'share3dcam.png')),42,A4[1]-45,width=133,height=29,mask='auto',preserveAspectRatio=True,anchor='c')
         canvas.setFillColor(colors.white);canvas.setFont('InspectionSC',10);canvas.drawRightString(A4[0]-42,A4[1]-29,'SHARE3DCAM 电商销售中心')
-        canvas.setFont('InspectionSC',7);canvas.drawRightString(A4[0]-42,A4[1]-43,'E-commerce Sales Center | Mesh Studio 1.8.0')
+        canvas.setFont('InspectionSC',7);canvas.drawRightString(A4[0]-42,A4[1]-43,'E-commerce Sales Center | Mesh Studio '+report['version'])
         canvas.setStrokeColor(colors.HexColor('#dce4ee'));canvas.line(42,37,A4[0]-42,37)
         canvas.setFillColor(colors.HexColor('#53657b'));canvas.setFont('InspectionSC',7)
         canvas.drawString(42,24,report_id);canvas.drawRightString(A4[0]-42,24,f'第 {doc.page} 页 / Page {doc.page}')
@@ -170,10 +175,15 @@ def _pdf(folder,report,control):
     for w in report['walls']:
         control.check();story += [PageBreak(),p(f'03  {w["id"]} 墙面分区分析',h1),
             p(f'{STATUS[w["status"]]} | {w["count"]:,} 个原始点 | {len(w["zones"])} 个分区'),
-            picture(folder/f'figures/{w["id"]}.png',240),
-            p('黑色 × 标记最大绝对偏差位置；浅灰为无数据。图中分区号须与墙面号组合使用。',small),Spacer(1,8),
+            picture(folder/f'figures/{w["id"]}.png',180),
+            p('黑色 × 为最大偏差位置；浅灰为无数据。分区号与墙面号组合使用。',small),
+            picture(folder/f'figures/{w["id"]}-extraction.png',145),
+            p('原色图只显示本墙面；剖面蓝色为本墙面、灰色为周边表面（采样）。橙框处存在分层，无法确认单一墙面；空白处不补面、不判为合格。',small),Spacer(1,8),
             table(['最大绝对偏差','均方根 RMS','峰谷差','超差点比例'],[[f'{w["max_abs_mm"]:.3f} mm',f'{w["rms_mm"]:.3f} mm',f'{w["range_mm"]:.3f} mm',f'{w["outside_percent"]:.2f}%']]),Spacer(1,10)]
         rows=[[z['id'].split('-')[-1],f'{z["count"]:,}',f'{z["max_abs_mm"]:.3f}',f'{z["rms_mm"]:.3f}',f'{z["outside_percent"]:.2f}',f'{z["coverage_percent"]:.1f}',STATUS[z['status']]] for z in w['zones']]
+        if len(rows)>6:
+            story += [PageBreak(),p(f'{w["id"]} 分区明细 / Zone details',h1),
+                      p('对应上一页同编号墙面的偏差图和提取图；各分区共用该墙面的参考平面。')]
         story.append(table(['分区','点数','最大绝对\n偏差 mm','RMS\nmm','超差\n比例 %','有点\n覆盖 %','状态'],rows,[45,70,85,65,65,60,width-390]))
         story+=[Spacer(1,9),p('最大偏差点源坐标 ('+report['unit']+')：'+', '.join(f'{v:.6f}' for v in w['worst_point'])),
                 p('复核说明：'+'；'.join(w['review_reasons']) if w['review_reasons'] else '未触发本软件的数据质量复核提示。',small)]

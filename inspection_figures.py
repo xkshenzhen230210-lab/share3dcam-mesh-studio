@@ -72,3 +72,29 @@ def wall_map(path,wall,raster,tolerance,factor):
     fig.colorbar(im,ax=ax,shrink=.85,extend='both',label='有符号偏差 / Deviation (mm)')
     ax.set_title(f'{wall["id"]}  |  全量点网格极值 / All-point cell extremes',fontsize=11)
     fig.savefig(path,dpi=180,facecolor='white',bbox_inches='tight');plt.close(fig)
+
+
+def wall_extraction(path,wall,index,assets):
+    """Show only assigned wall RGB, with surrounding surfaces in a depth section.
+
+    The section is diagnostic context, never added to the measured wall. Both
+    panels use the same bounded source sample as the interactive wall preview.
+    """
+    factor=assets['metres_per_unit']
+    center=(np.asarray(wall['plane_origin'])-assets['origin'])*factor
+    rotation=np.column_stack((wall['u'],wall['v'],np.cross(wall['u'],wall['v'])))
+    local=(assets['sample']-center)@rotation
+    low,high=np.asarray(wall['uv_bounds'])
+    selected=assets['labels']==index
+    context=(~selected)&np.all((local[:,:2]>=low-.05)&(local[:,:2]<=high+.05),axis=1)&(np.abs(local[:,2])<=.35)
+    fig,axes=plt.subplots(1,2,figsize=(10,3.1),layout='constrained')
+    axes[0].scatter(local[selected,0]-low[0],local[selected,1]-low[1],c=assets['rgb'][selected],s=1.5,rasterized=True)
+    axes[0].set_aspect('equal');axes[0].set(xlabel='U (m)',ylabel='V (m)',title='单独墙面原色 / Isolated wall RGB')
+    for u,v in wall.get('overlap_cells',[]):
+        axes[0].add_patch(Rectangle((u-.06,v-.06),.12,.12,fill=False,edgecolor='#e87508',linewidth=.9))
+    axes[1].scatter(local[context,0]-low[0],local[context,2]*1000,c='#aeb9c6',s=1,rasterized=True,label='周边表面 / Context')
+    axes[1].scatter(local[selected,0]-low[0],local[selected,2]*1000,c='#176399',s=1.5,rasterized=True,label='本墙面 / Wall')
+    axes[1].set(xlabel='U (m)',ylabel='深度 / Depth (mm)',title='水平剖面 / Depth section',ylim=(-350,350))
+    axes[1].legend(loc='upper right',fontsize=7,markerscale=3)
+    for ax in axes:ax.grid(alpha=.15)
+    fig.savefig(path,dpi=180,facecolor='white',bbox_inches='tight');plt.close(fig)

@@ -1,5 +1,7 @@
 # 1.8.0 automatic wall inspection validation
 
+**Superseded for wall-membership interpretation by 1.8.1.** Isolated RGB and side-section inspection later exposed nearby-layer contamination in this real sample, especially W003 and W024. The numerical SVD agreement below validates arithmetic for the old assigned set, not that every assigned point is a wall. Use a newly generated 1.8.1 report and `VALIDATION_1.8.1.md`.
+
 Date: 2026-11-06 (Asia/Shanghai). Method: all assigned original points relative to each wall's least-squares plane; shared reference for its metric zones. Tolerance is configurable and independent of membership.
 
 ## Algorithm and delivery checks

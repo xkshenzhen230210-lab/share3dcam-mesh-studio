@@ -29,6 +29,7 @@ class WallReportTests(unittest.TestCase):
             self.assertIn('溪瑞苑 &lt;A&amp;B&gt;',(root/'report/report.html').read_text(encoding='utf-8'))
             self.assertTrue((root/'report/墙面平整度报告.pdf').read_bytes().startswith(b'%PDF-'))
             self.assertTrue((root/'report/figures/W001.png').is_file())
+            self.assertTrue((root/'report/figures/W001-extraction.png').is_file())
             cache=json.loads((root/'report/W001/model.spoints').read_text(encoding='utf-8'))
             self.assertEqual(cache['source_count'],r['walls'][0]['count'])
             original=json.loads((root/'report/W001/original/model.spoints').read_text(encoding='utf-8'))
