@@ -1,6 +1,10 @@
-# SHARE3DCAM Mesh Studio 1.8.3 · 模型工作台
+# SHARE3DCAM Mesh Studio 1.8.4 · 模型工作台
 
 SHARE3DCAM 电商销售中心 / SHARE3DCAM E-commerce Sales Center
+
+## 1.8.4 统一打开入口 / Unified file opening
+
+LAS 点云与网格模型统一从“文件 / File”选择后自动打开，也可粘贴路径再点击“打开 / Open”。移除重复的“导入 LAS”按钮；文件选择框默认显示全部支持格式，可按 LAS 或 PLY 筛选。LAS 的裁剪、墙面分析和视频功能沿用原有流程。
 
 ## 1.8.3 连续运镜 / Continuous camera motion
 
