@@ -8,7 +8,8 @@ import numpy as np
 from converter import Control
 from point_data import _LasSource, _rgb
 from wall_flatness import UNIT_MM
-from wall_segmentation import detect_walls, assign_points, ASSIGN_BAND, AMBIGUITY
+from wall_segmentation import (detect_walls, assign_points, ASSIGN_BAND, AMBIGUITY,
+                               LAYER_STEP, LOCAL_SUPPORT_DEPTH, OVERLAP_CELL, overlapping_surface_cells)
 
 SAMPLE_LIMIT=250_000
 
@@ -129,13 +130,17 @@ def measure_scan(source,unit='m',tolerance_mm=5.,zone_size_m=2.,metadata=None,co
         control.log('逐分区计算全部原始点 / Measuring every zone',60+30*(start+len(records))/reader.count)
     unchanged()
     if seen!=assigned:raise ValueError('全量点计数不一致 / Point accounting changed')
+    sample_labels,_=assign_points(sample,walls,control,np.concatenate(sample_normals) if has_normals else None)
     steps=(np.asarray(reader.header.scales)*UNIT_MM[unit]).tolist();reports=[]
-    for wall,m,stat,raster,wall_zones in zip(walls,moment,stats,maps,zones):
+    for wall_index,(wall,m,stat,raster,wall_zones) in enumerate(zip(walls,moment,stats,maps,zones)):
+        points=sample[sample_labels==wall_index]
+        uv=(points-wall['centroid'])@np.column_stack((wall['u'],wall['v']))-wall['uv_bounds'][0]
+        overlap=overlapping_surface_cells(uv,(points-wall['fit_center'])@wall['fit_normal'])
         info=stat.result(origin,factor)
         info.update(id=wall['id'],centroid=(wall['fit_center']/factor+origin).tolist(),normal=wall['fit_normal'].tolist(),
                     bounds=(m.bounds/factor+origin).tolist(),plane_origin=(wall['centroid']/factor+origin).tolist(),
                     u=wall['u'].tolist(),v=wall['v'].tolist(),uv_bounds=wall['uv_bounds'].tolist(),
-                    map_resolution_m=raster['resolution'],planarity_ratio=wall['ratio'],zones=[])
+                    map_resolution_m=raster['resolution'],planarity_ratio=wall['ratio'],overlap_cells=overlap.tolist(),zones=[])
         span=wall['uv_bounds'][1]-wall['uv_bounds'][0]
         for index,(key,values) in enumerate(sorted(wall_zones.items(),key=lambda item:(item[0][1],item[0][0]))):
             zone=values.result(origin,factor);lo=np.array(key)*zone_size_m;hi=np.minimum(lo+zone_size_m,span)
@@ -147,6 +152,8 @@ def measure_scan(source,unit='m',tolerance_mm=5.,zone_size_m=2.,metadata=None,co
             occupied=int(np.count_nonzero((raster['count']>0)&selection))
             coverage=min(100.,occupied*raster['resolution']**2/max(area,1e-12)*100)
             reasons=[]
+            overlap_count=int(np.count_nonzero(np.all((overlap+OVERLAP_CELL/2>=lo)&(overlap-OVERLAP_CELL/2<hi),axis=1)))
+            if overlap_count:reasons.append('同位置存在分层表面，无法确认单一墙面 / Overlapping surfaces; wall unresolved')
             if values.count<30:reasons.append('点数不足 / Too few points')
             if area<.05 or coverage<30:reasons.append('覆盖不足或狭窄边缘 / Sparse coverage or narrow edge')
             if values.band_edge:reasons.append('接近归属边界，需检查混入物或漏分割 / Near membership band')
@@ -154,22 +161,22 @@ def measure_scan(source,unit='m',tolerance_mm=5.,zone_size_m=2.,metadata=None,co
             if max(steps)>tolerance_mm:reasons.append('坐标步长大于容差 / Coordinate step exceeds tolerance')
             zone.update(id=f'{wall["id"]}-Z{index+1:03d}',grid=list(map(int,key)),uv_bounds=[lo.tolist(),hi.tolist()],
                         reference_area_m2=area,occupied_area_m2=occupied*raster['resolution']**2,
-                        coverage_percent=coverage,review_reasons=reasons,
+                        coverage_percent=coverage,overlap_cell_count=overlap_count,review_reasons=reasons,
                         status='review' if reasons else 'outside' if values.outside else 'within')
             info['zones'].append(zone)
         info['review_reasons']=sorted({reason for z in info['zones'] for reason in z['review_reasons']})
         info['status']='review' if info['review_reasons'] else 'outside' if info['outside_count'] else 'within'
         reports.append(info)
-    sample_labels,_=assign_points(sample,walls,control,np.concatenate(sample_normals) if has_normals else None)
     metadata={k:str((metadata or {}).get(k,'')).strip()[:200] for k in ('project','site','operator','reference')}
-    report=dict(version='1.8.0',source=str(source),source_size=before.st_size,source_mtime_ns=before.st_mtime_ns,
+    report=dict(version='1.8.1',source=str(source),source_size=before.st_size,source_mtime_ns=before.st_mtime_ns,
                 source_count=reader.count,unit=unit,tolerance_mm=tolerance_mm,zone_size_m=zone_size_m,
                 coordinate_steps_mm=steps,metadata=metadata,created_at=datetime.now().astimezone().isoformat(),
                 assigned_count=assigned,unassigned_count=reader.count-assigned,ambiguous_count=ambiguous,
                 assigned_point_percent=100*assigned/reader.count,sample_count=len(sample),sample_stride=stride,
                 assignment_band_m=ASSIGN_BAND,ambiguity_m=AMBIGUITY,wall_limit_reached=limited,
                 orientation_method='source_normals_with_spatial_fallback' if has_normals else 'sample_neighbourhood_normals',
-                local_connection_depth_slack_m=.025,
+                local_connection_depth_slack_m=LOCAL_SUPPORT_DEPTH,sampled_surface_depth_step_m=LAYER_STEP,
+                overlap_check_cell_m=OVERLAP_CELL,
                 method='automatic_connected_vertical_planes; all_assigned_points_least_squares; shared_wall_reference',
                 walls=reports,zone_count=sum(len(w['zones']) for w in reports),source_unchanged=True)
     control.check();unchanged()

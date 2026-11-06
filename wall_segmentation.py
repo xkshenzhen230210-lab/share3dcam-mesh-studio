@@ -13,6 +13,9 @@ VOXEL = .18
 FOOTPRINT = .20
 ASSIGN_BAND = .15
 AMBIGUITY = .005
+LAYER_STEP = .035
+LOCAL_SUPPORT_DEPTH = .025
+OVERLAP_CELL = .12
 
 
 def basis(normal):
@@ -101,7 +104,16 @@ def _connect_membership(wall,field):
     selected=np.flatnonzero((distance<=ASSIGN_BAND)&aligned&_inside(xyz,wall))
     members=np.zeros(len(xyz),dtype=bool)
     if len(selected):
-        _,components=connected_components(field['graph'][selected][:,selected],directed=False)
+        graph=field['graph'][selected][:,selected].tocoo()
+        depth=(xyz[selected]-wall['centroid'])@wall['normal']
+        # Neighbour PCA can tilt between close parallel layers and create a
+        # false tangent bridge. Check depth steps against the candidate's stable
+        # plane as well. Continuous wall bowing remains connected; a separate
+        # offset face cannot hop across a normal-depth gap just because its
+        # nearest neighbour is diagonally far away.
+        keep=np.abs(depth[graph.row]-depth[graph.col])<=LAYER_STEP+1e-8
+        graph=csr_matrix((graph.data[keep],(graph.row[keep],graph.col[keep])),shape=graph.shape)
+        _,components=connected_components(graph,directed=False)
         # The footprint already distinguishes disconnected wall candidates.
         # Vote using the detected plane's seed locations. A larger neighbouring
         # surface must not steal a smaller wall merely because both fit the band.
@@ -223,8 +235,7 @@ def assign_points(xyz,walls,control=None,normals=None):
         # it is independent of distance to the fitted plane or report tolerance.
         delta=xyz-field['xyz'][nearest]
         depth=np.abs(np.einsum('ij,ij->i',delta,estimated))
-        tangent=np.sqrt(np.maximum(0.,support_distance**2-depth**2))
-        supported&=depth<=.025+.7*tangent+1e-8
+        supported&=depth<=LOCAL_SUPPORT_DEPTH+1e-8
         if normals is not None:
             length=np.linalg.norm(normals,axis=1);valid=np.isfinite(normals).all(axis=1)&(length>.5)&(length<1.5)
             estimated[valid]=normals[valid]/length[valid,None]
@@ -245,3 +256,22 @@ def assign_points(xyz,walls,control=None,normals=None):
     ambiguous=np.isfinite(second)&((second-np.where(np.isfinite(best),best,0))<=AMBIGUITY)
     labels[ambiguous]=-1
     return labels,ambiguous
+
+
+def overlapping_surface_cells(uv,depth):
+    """Locate unresolved depth layers in the same wall projection.
+
+    This is a quality guard, not an outlier filter: no measured point is
+    removed. Require at least three sample points on both sides of an empty
+    depth gap, so a lone extreme point remains a possible wall defect.
+    """
+    keys=np.floor(np.asarray(uv)/OVERLAP_CELL).astype(np.int64)
+    if not len(keys):return np.empty((0,2),dtype=float)
+    cells,inverse,counts=np.unique(keys,axis=0,return_inverse=True,return_counts=True)
+    order=np.argsort(inverse,kind='stable');starts=np.r_[0,np.cumsum(counts)]
+    found=[]
+    for i in np.flatnonzero(counts>=6):
+        values=np.sort(np.asarray(depth)[order[starts[i]:starts[i+1]]])
+        # Candidate split indices leave >= 3 observations in each layer.
+        if np.any(np.diff(values)[2:len(values)-3]>LAYER_STEP):found.append((cells[i]+.5)*OVERLAP_CELL)
+    return np.asarray(found,dtype=float).reshape(-1,2)

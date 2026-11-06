@@ -7,7 +7,7 @@ import numpy as np
 
 from auto_wall import measure_scan
 from tests.test_wall_flatness import write_las
-from wall_segmentation import assign_points, detect_walls
+from wall_segmentation import assign_points, detect_walls, overlapping_surface_cells
 
 
 def wall_and_nearby_surfaces():
@@ -45,6 +45,25 @@ def main_wall_index(walls):
 
 
 class WallMembershipTests(unittest.TestCase):
+    def test_overlap_guard_flags_two_layers_but_not_continuous_bow_or_lone_defect(self):
+        uv=np.array([[.02,.02],[.04,.02],[.06,.02],[.02,.04],[.04,.04],[.06,.04]])
+        self.assertEqual(len(overlapping_surface_cells(uv,np.array([0,0,0,.08,.08,.08]))),1)
+        self.assertEqual(len(overlapping_surface_cells(uv,np.array([0,0,0,0,0,.08]))),0)
+        x,z=np.meshgrid(np.linspace(0,3,121),np.linspace(0,2.8,113))
+        self.assertEqual(len(overlapping_surface_cells(np.c_[x.ravel(),z.ravel()],(.05*np.sin(x*np.pi/3)**2).ravel())),0)
+
+    def test_sparse_parallel_object_does_not_bridge_into_wall(self):
+        spacing=.06
+        x,z=np.meshgrid(np.arange(0,3.01,spacing),np.arange(0,2.81,spacing))
+        wall=np.column_stack((x.ravel(),np.zeros(x.size),z.ravel()))
+        x,z=np.meshgrid(np.arange(.55,1.45,spacing),np.arange(.2,2.6,spacing))
+        panel=np.column_stack((x.ravel(),np.full(x.size,.04),z.ravel()))
+        xyz=np.vstack((wall,panel));walls,_=detect_walls(xyz)
+        main=main_wall_index(walls)
+        labels,_=assign_points(xyz,walls,normals=np.tile([0,1,0],(len(xyz),1)))
+        self.assertLessEqual(np.mean(labels[len(wall):]==main),.01)
+        self.assertGreater(np.mean(labels[:len(wall)]==main),.70)
+
     def test_nearby_floor_corner_and_fixture_are_not_wall_members(self):
         wall, _, neighbours = wall_and_nearby_surfaces()
         xyz = np.vstack([wall, *neighbours.values()])
@@ -103,12 +122,21 @@ class WallMembershipTests(unittest.TestCase):
         # normals are wall-parallel, so orientation alone is insufficient.
         walls, _ = detect_walls(wall[::2])
         main = main_wall_index(walls)
-        fixture = neighbours['fixture']
-        query = np.vstack((wall[bump], fixture))
-        normals = np.tile([0., 1., 0.], (len(query), 1))
-        labels, _ = assign_points(query, walls, normals=normals)
-        self.assertTrue(np.all(labels[:np.count_nonzero(bump)] == main))
-        self.assertTrue(np.all(labels[np.count_nonzero(bump):] == -1))
+        for gap in (.04,.09):
+            fixture = neighbours['fixture'].copy();fixture[:,1]=gap
+            query = np.vstack((wall[bump], fixture))
+            normals = np.tile([0., 1., 0.], (len(query), 1))
+            labels, _ = assign_points(query, walls, normals=normals)
+            self.assertTrue(np.all(labels[:np.count_nonzero(bump)] == main))
+            self.assertTrue(np.all(labels[np.count_nonzero(bump):] == -1))
+
+    def test_continuous_fifty_mm_wall_bow_is_retained(self):
+        x,z=np.meshgrid(np.linspace(0,3,121),np.linspace(0,2.8,113))
+        height=.05*np.sin(x*np.pi/3)**2
+        xyz=np.column_stack((x.ravel(),height.ravel(),z.ravel()))
+        walls,_=detect_walls(xyz[::2]);labels,_=assign_points(xyz,walls)
+        self.assertGreater(np.mean(labels>=0),.99)
+        self.assertTrue(np.all(labels[height.ravel()>.04]>=0))
 
     def test_full_las_statistics_match_the_wall_including_its_bump(self):
         wall, bump, neighbours = wall_and_nearby_surfaces()
