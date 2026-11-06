@@ -124,17 +124,17 @@ struct ViewSnapshot : osg::Camera::DrawCallback {
  }
 };
 
-void fitClipBox(MouseCamera& camera,const osg::BoundingBoxd& box,double aspect){
+void fitClipBox(MouseCamera& camera,const osg::BoundingBoxd& box,double aspect,const HorizontalFrame& frame=HorizontalFrame()){
  auto forward=camera.center-camera.eye;
  if(!box.valid()||forward.normalize()<1e-10||aspect<=0)return;
  auto right=forward^camera.up;
  if(right.normalize()<1e-10)return;
  auto up=right^forward;
  const double tanY=std::tan(osg::DegreesToRadians(camera.fovy)*.5);
- auto center=box.center();
+ auto center=frame.world(box.center());
  double depth=pickNear*3.;
  for(unsigned corner=0;corner<8;corner++){
-  auto offset=box.corner(corner)-center;
+  auto offset=frame.world(box.corner(corner))-center;
   double span=std::max(std::abs(offset*right)/(tanY*aspect),std::abs(offset*up)/tanY);
   depth=std::max(depth,span*1.12-offset*forward+pickNear);
  }
@@ -145,7 +145,7 @@ void fitClipBox(MouseCamera& camera,const osg::BoundingBoxd& box,double aspect){
 
 std::optional<osg::Vec3d> pickSurface(osg::Node& model,const PointScene& points,
                                      const MouseCamera& camera,double x,double y,double height,
-                                     const osg::BoundingBoxd& clipBounds){
+                                     const osg::BoundingBoxd& clipBounds,const HorizontalFrame& frame=HorizontalFrame()){
  auto forward=camera.center-camera.eye;
  if(forward.normalize()<1e-10)return {};
  auto right=forward^camera.up;
@@ -169,22 +169,23 @@ std::optional<osg::Vec3d> pickSurface(osg::Node& model,const PointScene& points,
    double radius=depth*tolerance;
    if(dx*dx+dy*dy>radius*radius)continue;
    auto world=local+points.origin;
-   if(clipBounds.valid()&&!clipBounds.contains(world))continue;
+   if(clipBounds.valid()&&!clipBounds.contains(frame.local(world)))continue;
    nearest=depth;
    hit=world;
   }
   return hit;
  }
  auto ray=forward+right*sx+up*sy;
+ auto boxEye=frame.local(camera.eye),boxRay=frame.localVector(ray);
  double start=pickNear,end=pickFar;
  // Clip the ray before intersecting so hidden triangles cannot become the pivot.
  if(clipBounds.valid())for(int axis=0;axis<3;axis++){
-  if(std::abs(ray[axis])<1e-12){
-   if(camera.eye[axis]<clipBounds._min[axis]||camera.eye[axis]>clipBounds._max[axis])return {};
+  if(std::abs(boxRay[axis])<1e-12){
+   if(boxEye[axis]<clipBounds._min[axis]||boxEye[axis]>clipBounds._max[axis])return {};
    continue;
   }
-  double a=(clipBounds._min[axis]-camera.eye[axis])/ray[axis];
-  double b=(clipBounds._max[axis]-camera.eye[axis])/ray[axis];
+  double a=(clipBounds._min[axis]-boxEye[axis])/boxRay[axis];
+  double b=(clipBounds._max[axis]-boxEye[axis])/boxRay[axis];
   start=std::max(start,std::min(a,b));end=std::min(end,std::max(a,b));
   if(start>=end)return {};
  }
@@ -231,6 +232,12 @@ void writeState(const json& value,const wchar_t* destination=L"state.json"){
 }
 void state(const json& value){writeState(value);}
 int main(int argc,char**argv){try{
+ if(argc==3&&std::string(argv[1])=="--test-alignment"){
+  std::ifstream input(fs::u8path(argv[2]));json points;input>>points;std::vector<osg::Vec2d> footprint;osg::BoundingBoxd source;
+  for(auto& p:points){osg::Vec3d v(p[0],p[1],p[2]);source.expandBy(v);footprint.push_back({v.x(),v.y()});}
+  footprint=footprintHull(std::move(footprint));auto frame=principalFrame(footprint,source);auto b=frameBounds(frame,footprint,source);
+  std::cout<<json({{"frame",frame.json()},{"bounds",{b.xMin(),b.yMin(),b.zMin(),b.xMax(),b.yMax(),b.zMax()}}}).dump();return 0;
+ }
  if(argc==2&&std::string(argv[1])=="--test-mouse-controls"){
   MouseCamera initial{{0,-5,0},{0,0,0},{0,0,1},35.};json result;
   auto save=[&](const char* name,const MouseCamera& p){auto vec=[](const osg::Vec3d& v){return json::array({v.x(),v.y(),v.z()});};result[name]={{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)}};};
@@ -304,7 +311,7 @@ int main(int argc,char**argv){try{
  auto gc=osg::GraphicsContext::createGraphicsContext(traits);if(!gc)throw std::runtime_error("OpenGL context failed");
  osgViewer::Viewer viewer;viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);viewer.getCamera()->setGraphicsContext(gc);viewer.getCamera()->setViewport(0,0,w,h);viewer.getCamera()->setProjectionMatrixAsPerspective(35.,double(w)/h,.01,100000.);viewer.getCamera()->setClearColor(osg::Vec4(.055,.08,.12,1));
  auto scene=new osg::Group;auto clip=new osg::ClipNode;clip->addChild(model);scene->addChild(clip);
- auto box=new osg::Geode;auto geom=new osg::Geometry;auto vertices=new osg::Vec3Array(24);geom->setVertexArray(vertices);geom->addPrimitiveSet(new osg::DrawArrays(GL_LINES,0,24));auto colors=new osg::Vec4Array;colors->push_back(osg::Vec4(1,.52,.18,1));geom->setColorArray(colors,osg::Array::BIND_OVERALL);box->addDrawable(geom);box->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);box->getOrCreateStateSet()->setAttribute(new osg::LineWidth(2));scene->addChild(box);box->setNodeMask(0);
+ auto box=new osg::Geode;auto geom=new osg::Geometry;auto vertices=new osg::Vec3dArray(24);geom->setVertexArray(vertices);geom->addPrimitiveSet(new osg::DrawArrays(GL_LINES,0,24));auto colors=new osg::Vec4Array;colors->push_back(osg::Vec4(1,.52,.18,1));geom->setColorArray(colors,osg::Array::BIND_OVERALL);box->addDrawable(geom);box->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);box->getOrCreateStateSet()->setAttribute(new osg::LineWidth(2));scene->addChild(box);box->setNodeMask(0);
  auto marker=new osg::MatrixTransform;
  auto markerNode=new osg::Geode;
  auto markerGeometry=new osg::Geometry;
@@ -353,8 +360,31 @@ int main(int argc,char**argv){try{
   bb.init();bb.expandBy(osg::Vec3(points.fitBounds._min));bb.expandBy(osg::Vec3(points.fitBounds._max));
  }
  if(bb.valid())sphere=osg::BoundingSphere(bb);
- json lohi;if(bb.valid())lohi={bb.xMin(),bb.yMin(),bb.zMin(),bb.xMax(),bb.yMax(),bb.zMax()};else lohi={sphere.center().x()-sphere.radius(),sphere.center().y()-sphere.radius(),sphere.center().z()-sphere.radius(),sphere.center().x()+sphere.radius(),sphere.center().y()+sphere.radius(),sphere.center().z()+sphere.radius()};
- auto home=sphere.center();double distance=std::max(1.f,sphere.radius());manip->setHomePosition(home+osg::Vec3d(distance*1.2,-distance*1.8,distance*1.3),home,osg::Vec3d(0,0,1));viewer.home();
+ HorizontalFrame frame;osg::BoundingBoxd sourceBounds=bb;
+ if(points.active)sourceBounds.set(points.bounds[0],points.bounds[1],points.bounds[2],points.bounds[3],points.bounds[4],points.bounds[5]);
+ if(!sourceBounds.valid()){auto c=sphere.center();double r=std::max(1.f,sphere.radius());sourceBounds.set(c.x()-r,c.y()-r,c.z()-r,c.x()+r,c.y()+r,c.z()+r);}
+ osg::BoundingBoxd selectedBounds=sourceBounds;
+ if(job.value("auto_align",false)){
+  std::vector<osg::Vec2d> footprint;bool sampledFootprint=false;
+  if(points.active){
+   footprint=points.footprint;
+   if(footprint.empty()){
+    for(auto& p:*points.positions)footprint.push_back({double(p.x())+points.origin.x(),double(p.y())+points.origin.y()});
+    footprint=footprintHull(std::move(footprint));
+    sampledFootprint=true;
+   }
+  }else{
+   FootprintVisitor sample(fs::u8path(job.at("source").get<std::string>()).parent_path());model->accept(sample);footprint=std::move(sample.hull);
+   if(sample.bounds.valid())sourceBounds=sample.bounds;
+  }
+  frame=principalFrame(footprintHull(footprint),sourceBounds);
+  // Estimate direction from sampled geometry, then conservatively enclose the
+  // original extent of older caches. AABB corners must not bias the direction.
+  if(sampledFootprint)for(unsigned i=0;i<8;i++){auto p=sourceBounds.corner(i);footprint.push_back({p.x(),p.y()});}
+  selectedBounds=frameBounds(frame,footprint,sourceBounds);
+ }
+ json lohi={selectedBounds.xMin(),selectedBounds.yMin(),selectedBounds.zMin(),selectedBounds.xMax(),selectedBounds.yMax(),selectedBounds.zMax()};
+ auto home=sphere.center();double distance=std::max(1.f,sphere.radius());manip->setHomePosition(home+frame.direction(osg::Vec3d(distance*1.2,-distance*1.8,distance*1.3)),home,osg::Vec3d(0,0,1));viewer.home();
  long long last=-1;int frames=0;double fovy=35.,fixedAspect=0.,navigationSpeed=1.5,mouseSensitivity=1.;unsigned mouseSteps=0;
  osg::BoundingBoxd clipBounds;
  std::optional<osg::Vec3d> lastPickedPoint;
@@ -386,8 +416,8 @@ int main(int argc,char**argv){try{
   auto vp=viewer.getCamera()->getViewport();
   double x=cursor.x+.5-vp->x()-vp->width()*.5;
   double y=cursor.y+.5-(h-vp->y()-vp->height()*.5);
-  return analysisVisible?pickSurface(*analysis->node,*analysis,p,x,y,vp->height(),clipBounds):
-   pickSurface(*model,points,p,x,y,vp->height(),clipBounds);
+  return analysisVisible?pickSurface(*analysis->node,*analysis,p,x,y,vp->height(),clipBounds,frame):
+   pickSurface(*model,points,p,x,y,vp->height(),clipBounds,frame);
  };
  mouseStart=[&](MouseMotion motion,POINT cursor,bool centerOnPoint){
   if(!insideViewport(cursor))return false;
@@ -399,7 +429,7 @@ int main(int argc,char**argv){try{
   auto forward=p.center-p.eye;
   forward.normalize();
   auto pivot=p.center;
-  if(lastPickedPoint&&(!clipBounds.valid()||clipBounds.contains(*lastPickedPoint))&&
+  if(lastPickedPoint&&(!clipBounds.valid()||clipBounds.contains(frame.local(*lastPickedPoint)))&&
      (*lastPickedPoint-p.eye)*forward>pickNear)pivot=*lastPickedPoint;
   dragPivot=pivot;
   panDepth=(pivot-p.eye)*forward;
@@ -460,7 +490,7 @@ int main(int argc,char**argv){try{
    measurement["distance"]=delta.length();
    measurement["delta"]=vec(delta);
   }
-  state({{"ready",true},{"bounds",job.value("bounds",lohi)},{"applied_seq",last},{"analysis_visible",analysisVisible},{"analysis_source",analysisSource},{"analysis_error",analysisError},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
+  state({{"ready",true},{"bounds",lohi},{"clip_frame",frame.json()},{"applied_seq",last},{"analysis_visible",analysisVisible},{"analysis_source",analysisSource},{"analysis_error",analysisError},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
  };
  auto lastState=std::chrono::steady_clock::now(),lastMove=lastState;publish();
  while(!viewer.done()&&IsWindow(parent)){
@@ -479,8 +509,8 @@ int main(int argc,char**argv){try{
      refreshRuler();
     }
     while(clip->getNumClipPlanes())clip->removeClipPlane(clip->getClipPlane(0));
-    if(enabled&&!points.active)for(unsigned i=0;i<6;i++){osg::Vec4d p(0,0,0,0);p[i%3]=i<3?1:-1;p[3]=i<3?-b[i]:b[i];clip->addClipPlane(new osg::ClipPlane(i,p));}
-    points.setClip(enabled,b);
+    if(enabled&&!points.active)for(unsigned i=0;i<6;i++)clip->addClipPlane(new osg::ClipPlane(i,frame.plane(i,b)));
+    points.setClip(enabled,b,frame);
     auto nextAnalysis=command.value("analysis_source",std::string());
     if(nextAnalysis.empty())analysisError.clear();
     if(nextAnalysis!=analysisSource){
@@ -500,7 +530,7 @@ int main(int argc,char**argv){try{
     if(nextVisible!=analysisVisible){lastPickedPoint.reset();measureCount=0;measureHit.reset();refreshRuler();}
     analysisVisible=nextVisible;
     model->setNodeMask(analysisVisible?0u:~0u);
-    if(analysis){analysis->node->setNodeMask(analysisVisible?~0u:0u);analysis->setClip(enabled,b);}
+    if(analysis){analysis->node->setNodeMask(analysisVisible?~0u:0u);analysis->setClip(enabled,b,frame);}
     float pointSize=command.value("point_size",2.f);
     points.setPointSize(pointSize);if(analysis)analysis->setPointSize(pointSize);
     double speed=command.value("navigation_speed",navigationSpeed);if(std::isfinite(speed)&&speed>0&&speed<=100000)navigationSpeed=speed;
@@ -512,7 +542,7 @@ int main(int argc,char**argv){try{
       manip->applyPose(eye+delta,center+delta,up);
      }
     }
-    box->setNodeMask(command.value("showBox",false)?~0u:0u);unsigned at=0;for(int axis=0;axis<3;axis++)for(int j=0;j<4;j++){osg::Vec3 a,c;for(int k=0;k<3;k++)a[k]=c[k]=b[k];int a1=(axis+1)%3,a2=(axis+2)%3;a[a1]=c[a1]=b[a1+((j&1)?3:0)];a[a2]=c[a2]=b[a2+((j&2)?3:0)];c[axis]=b[axis+3];(*vertices)[at++]=a;(*vertices)[at++]=c;}vertices->dirty();geom->dirtyBound();geom->dirtyDisplayList();
+    box->setNodeMask(command.value("showBox",false)?~0u:0u);unsigned at=0;for(int axis=0;axis<3;axis++)for(int j=0;j<4;j++){osg::Vec3d a,c;for(int k=0;k<3;k++)a[k]=c[k]=b[k];int a1=(axis+1)%3,a2=(axis+2)%3;a[a1]=c[a1]=b[a1+((j&1)?3:0)];a[a2]=c[a2]=b[a2+((j&2)?3:0)];c[axis]=b[axis+3];(*vertices)[at++]=frame.world(a);(*vertices)[at++]=frame.world(c);}vertices->dirty();geom->dirtyBound();geom->dirtyDisplayList();
     scene->getOrCreateStateSet()->setAttributeAndModes(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK,command.value("wire",false)?osg::PolygonMode::LINE:osg::PolygonMode::FILL));
     std::string view=command.value("view",std::string());
     if(!view.empty())lastPickedPoint.reset();
@@ -524,12 +554,12 @@ int main(int argc,char**argv){try{
     else if(view=="clip"&&clipBounds.valid()){
      auto p=pose();
      auto viewport=viewer.getCamera()->getViewport();
-     fitClipBox(p,clipBounds,viewport->width()/viewport->height());
+     fitClipBox(p,clipBounds,viewport->width()/viewport->height(),frame);
      manip->applyPose(p.eye,p.center,p.up);
     }else if(view=="top"||view=="front"||view=="right"){
      auto c=sphere.center();double d=std::max(1.f,sphere.radius())*3.5;osg::Vec3d eye=c,up(0,0,1);
      if(view=="top"){eye.z()+=d;up.set(0,1,0);}else if(view=="front")eye.y()-=d;else eye.x()+=d;
-     manip->applyPose(eye,c,up);
+     manip->applyPose(c+frame.direction(eye-c),c,frame.direction(up));
     }
     if(command.contains("camera")){
      auto& camera=command.at("camera");auto vec=[&](const char* key){auto a=camera.at(key).get<std::vector<double>>();if(a.size()!=3||!std::all_of(a.begin(),a.end(),[](double v){return std::isfinite(v);}))throw std::runtime_error("Invalid camera vector");return osg::Vec3d(a[0],a[1],a[2]);};

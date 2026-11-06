@@ -13,6 +13,7 @@ from gltf import Glb
 from tiles import Tile, flatten, load_tiles, obj_nodes
 from formats import reader, mesh_tree
 from clipping import clip_primitive
+from spatial_frame import ClipBox
 from quality import ExportQuality
 from model_paths import resolve_model
 
@@ -119,8 +120,7 @@ def metadata(input_path):
 def convert(input_path,output_path,formats='both',control=None,clip_box=None,preview=False):
     control=control or Control();source=resolve_model(input_path,allow_glb_collection=True)
     if clip_box is not None:
-        clip_box=np.asarray(clip_box,dtype=float)
-        if clip_box.shape!=(6,) or not np.isfinite(clip_box).all() or np.any(clip_box[:3]>=clip_box[3:]):raise ValueError('剪切盒范围无效 / Invalid clipping box')
+        clip_box=ClipBox(clip_box)
     if source.is_dir():
         for name in ('tileset.json','3dtiles/tileset.json','Model.glb','glb/Model.glb','Model.osgb','Model.obj','Model.ply','Model.stl'):
             if (source/name).is_file():source=source/name;break
@@ -155,7 +155,7 @@ def convert(input_path,output_path,formats='both',control=None,clip_box=None,pre
         with tempfile.TemporaryDirectory(prefix='meshread_') as temp:
             work=Path(temp);control.log('读取网格、材质与最终精度节点 / Reading mesh and materials…')
             job={'source':str(source),'output':str(work/'mesh')}
-            if clip_box is not None:job['clipBox']=clip_box.tolist()
+            if clip_box is not None:job['clipBox']=clip_box.world_bounds()
             write_json(work/'read.json',job)
             control.run([RUNTIME/'mesh_reader.exe','read.json'],work)
             tree=mesh_tree(work/'mesh/model.mesh')
@@ -187,7 +187,7 @@ def _convert(input_path,output_path,formats='both',control=None,clip_box=None,pr
     progress_file=output/'mesh_progress.json'
     obj=None;quality=None;global_min=np.full(3,np.inf);global_max=-global_min
     completed=0;geometry_count=0;empty_nodes=set()
-    report['clip_box']=list(clip_box) if clip_box is not None else None
+    report['clip_box']=clip_box.tolist() if clip_box is not None else None
     report['preview_textures']=preview
     write_json(output/'conversion_report.json',report)
     try:

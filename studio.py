@@ -36,7 +36,7 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.8.4 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.9.0 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -50,7 +50,7 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.8.4\n网格 · 点云 · 墙面 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.9.0\n网格 · 点云 · 墙面 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar();navigation_speed=tk.StringVar(value='1.5');mouse_sensitivity=tk.StringVar(value='1.0')
@@ -59,6 +59,9 @@ def gui():
     last_result=None
     point_size=tk.StringVar(value='2')
     point_kind=None
+    clip_frame={};prepared_view=None
+    auto_align=tk.BooleanVar(value=True)
+    alignment_note=tk.StringVar(value='水平主边对齐；切换后重置选区。\nAlign horizontal edges; switching resets selection.')
     recent_path=Path(os.environ.get('LOCALAPPDATA',tempfile.gettempdir()))/'SHARE3DCAM/MeshStudio/recent.json'
     line=ttk.Frame(main);line.pack(fill='x');ttk.Label(line,text='模型 / Model',font=('Microsoft YaHei UI',10,'bold')).pack(side='left',padx=(0,12))
     entry=ttk.Entry(line,textvariable=source);entry.pack(side='left',fill='x',expand=True)
@@ -163,7 +166,16 @@ def gui():
     canvas=tk.Canvas(clip_tab,bg='#edf1f7',highlightthickness=0,yscrollcommand=scroll.set);canvas.pack(fill='both',expand=True);scroll.configure(command=canvas.yview)
     side=ttk.Frame(canvas);side_window=canvas.create_window((0,0),window=side,anchor='nw')
     side.bind('<Configure>',lambda e:canvas.configure(scrollregion=canvas.bbox('all')));canvas.bind('<Configure>',lambda e:canvas.itemconfigure(side_window,width=e.width))
-    ttk.Label(side,text='剪切盒 / Clipping box',font=('Microsoft YaHei UI',14,'bold')).pack(anchor='w',pady=(0,12))
+    ttk.Label(side,text='剪切盒 / Clipping box',font=('Microsoft YaHei UI',14,'bold')).pack(anchor='w',pady=(0,8))
+    def alignment_changed():
+        if loaded_source and prepared_view:
+            start_viewer(prepared_view,loaded_source,None)
+    alignment_btn=ttk.Checkbutton(side,text='自动摆正 / Auto align',variable=auto_align,command=alignment_changed)
+    alignment_btn.pack(anchor='w')
+    ttk.Label(side,textvariable=alignment_note,foreground='#536b85',wraplength=280,justify='left',font=('Microsoft YaHei UI',9)).pack(anchor='w',pady=(3,8))
+    def clip_selection():
+        return dict(clip_frame,bounds=list(clip_history.box)) if auto_align.get() else list(clip_history.box)
+
     def clip_toggle():
         if enabled.get() and not commit_clip():enabled.set(False)
         flat_panel.invalidate()
@@ -278,7 +290,7 @@ def gui():
             switch(widget,ready)
         switch(cancel_btn,blocked and not closing)
         switch(result_btn,last_result is not None)
-        for widget in (clip_toggle_btn,box_edges_btn,reset_clip_btn,measure_clear,*number_entries,*(slider for _,slider in sliders)):
+        for widget in (alignment_btn,clip_toggle_btn,box_edges_btn,reset_clip_btn,measure_clear,*number_entries,*(slider for _,slider in sliders)):
             switch(widget,ready and not blocked)
         switch(fit_clip_btn,ready and not blocked and enabled.get() and clip_valid)
         switch(undo_clip_btn,ready and not blocked and (not clip_valid or bool(clip_history.history)))
@@ -306,18 +318,18 @@ def gui():
             import shutil
             shutil.rmtree(ipc,ignore_errors=True);ipc=None
     def start_viewer(path,original,default_target):
-        nonlocal viewer,viewer_log,ipc,loaded_source,state_read,bounds,clip_history,clip_valid,pending,point_kind
+        nonlocal viewer,viewer_log,ipc,loaded_source,state_read,bounds,clip_history,clip_valid,pending,point_kind,prepared_view,clip_frame
         if original!=loaded_source:video_panel.reset()
         if pending is not None:root.after_cancel(pending);pending=None
         stop_viewer();bounds=None;clip_history=None;clip_valid=True;enabled.set(False);clip_note.set('')
-        loaded_source=original;state_read=False
+        loaded_source=original;prepared_view=path;clip_frame={};state_read=False
         if default_target is not None:target.set(str(default_target))
         measure_text.set('正在打开模型 / Opening model')
         point_kind=None
         flat_panel.reset('墙面分析支持 LAS / Wall analysis supports LAS')
         auto_panel.reset(original if original.suffix.lower()=='.las' else None)
         ipc=Path(tempfile.mkdtemp(prefix='share_view_'));root.update_idletasks()
-        write_json(ipc/'job.json',{'source':str(path),'parent':viewport.winfo_id()})
+        write_json(ipc/'job.json',{'source':str(path),'parent':viewport.winfo_id(),'auto_align':auto_align.get()})
         if path.suffix=='.spoints':
             info=json.loads(path.read_text(encoding='utf-8'))
             point_kind=info['kind']
@@ -411,7 +423,7 @@ def gui():
     def export_video(filename,keys,resolution,fps):
         src=current_source()
         if enabled.get() and not clip_valid:raise ValueError('先修正剪切范围 / Fix the clipping bounds first')
-        box=clip_history.box if enabled.get() else None
+        box=clip_selection() if enabled.get() else None
         def task(control):
             render_video(src,filename,keys,resolution,fps,control,clip_box=box)
             events.put(('result',(Path(filename).parent,f'视频已导出 / Video exported · {resolution} · {filename}'),100))
@@ -449,7 +461,7 @@ def gui():
         src=current_source()
         if not enabled.get():raise ValueError('先选取墙面范围 / Select a wall area first')
         if not commit_clip():raise ValueError('请修正选区范围 / Fix selection bounds')
-        box=list(clip_history.box)
+        box=clip_selection()
         destination=target.get().strip().strip('"')
         if not destination:raise ValueError('请选择输出目录 / Select output directory')
         folder=available_output(Path(destination)/'wall_analysis')
@@ -528,7 +540,7 @@ def gui():
                 if src!=loaded_source or not bounds:raise ValueError('请先打开当前模型 / Open the current model first')
                 if not enabled.get():raise ValueError('请先启用剪切盒 / Enable clipping first')
                 if not commit_clip():return
-                box=clip_history.box
+                box=clip_selection()
         except Exception as e:status.set('无法导出 / Cannot export · '+str(e));return
         selected_format=fmt.get()
         def task(control):
@@ -548,7 +560,7 @@ def gui():
     source.trace_add('write',source_edited)
     entry.bind('<Return>',lambda _:open_model())
     def poll():
-        nonlocal bounds,state_read,closing,clip_history,last_result
+        nonlocal bounds,state_read,closing,clip_history,last_result,clip_frame
         try:
             while True:
                 kind,text,pct=events.get_nowait()
@@ -582,7 +594,9 @@ def gui():
             try:
                 state=json.loads((ipc/'state.json').read_text(encoding='utf-8'))
                 if state.get('ready') and not state_read:
-                    state_read=True;bounds=state['bounds']
+                    state_read=True;bounds=state['bounds'];clip_frame=state.get('clip_frame',{})
+                    angle=clip_frame.get('yaw_degrees',0)
+                    alignment_note.set((f'已摆正 / Aligned · {angle:.1f}°' if auto_align.get() else '原始方向 / Original axes')+'\n切换后重置选区 / Switching resets selection')
                     from point_data import is_point_source
                     is_points=is_point_source(loaded_source)
                     combo.configure(values=['原格式 / Source'] if is_points else ['OSGB + OBJ','OSGB','OBJ','3D Tiles'])

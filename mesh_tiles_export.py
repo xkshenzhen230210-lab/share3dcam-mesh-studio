@@ -16,6 +16,7 @@ from urllib.parse import quote
 import numpy as np
 
 from clipping import clip_primitive
+from spatial_frame import ClipBox
 from formats import reader
 from gltf import Glb, Y_TO_Z, local_uri
 from tiles import flatten, load_tiles, obj_nodes
@@ -319,9 +320,7 @@ def export_tiles(input_path, output_path, control=None, clip_box=None, prepared=
     control = control or Control()
     started = time.time()
     if clip_box is not None:
-        clip_box = np.asarray(clip_box, dtype=float)
-        if clip_box.shape != (6,) or not np.isfinite(clip_box).all() or np.any(clip_box[:3] >= clip_box[3:]):
-            raise ValueError('剪切盒范围无效 / Invalid clipping box')
+        clip_box = ClipBox(clip_box)
     tree, source, kind = prepared or input_tree(input_path)
     source = Path(source).resolve()
     output = Path(output_path).resolve()

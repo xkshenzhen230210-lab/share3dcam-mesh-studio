@@ -1,17 +1,19 @@
-"""Axis-aligned six-plane triangle clipping, including UV and normal interpolation."""
+"""Six-plane clipping in a working frame, preserving source geometry and UVs."""
 import numpy as np
+from spatial_frame import ClipBox
 
 
 def clip_primitive(part, box):
-    box=np.asarray(box,dtype=float)
-    if box.shape!=(6,) or not np.isfinite(box).all() or np.any(box[:3]>=box[3:]):
-        raise ValueError('剪切盒范围无效 / Invalid clipping box')
+    volume=ClipBox(box);box=volume.bounds
     positions=part['positions'];indices=part['indices']
-    triangles=positions[indices]
+    local=volume.local(positions)
+    triangles=local[indices]
     inside=np.all((triangles>=box[:3]) & (triangles<=box[3:]),axis=(1,2))
     if inside.all():return part
     outside=np.any(triangles.max(axis=1)<box[:3],axis=1)|np.any(triangles.min(axis=1)>box[3:],axis=1)
-    attrs=[positions];widths=[3]
+    # Carry world positions as attributes: untouched vertices stay exact, while
+    # intersections interpolate world positions, UVs and normals together.
+    attrs=[local,positions];widths=[3,3]
     for key in ('uv','normals'):
         if part[key] is not None:attrs.append(part[key]);widths.append(part[key].shape[1])
     data=np.concatenate(attrs,axis=1)
@@ -32,7 +34,7 @@ def clip_primitive(part, box):
         if len(polygon)>=3:
             output.append(np.array([p for i in range(1,len(polygon)-1) for p in (polygon[0],polygon[i],polygon[i+1])]))
     merged=np.concatenate(output,axis=0)
-    result=dict(part);result['positions']=merged[:,:3];cursor=3
+    result=dict(part);result['positions']=merged[:,3:6];cursor=6
     for key in ('uv','normals'):
         if part[key] is not None:
             width=part[key].shape[1];result[key]=merged[:,cursor:cursor+width];cursor+=width

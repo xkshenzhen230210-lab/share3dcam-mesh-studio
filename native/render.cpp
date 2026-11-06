@@ -162,10 +162,9 @@ int main(int argc,char** argv){
   memoryReport=memory.report(model);
   osg::ref_ptr<osg::ClipNode> scene=new osg::ClipNode;scene->addChild(model);
   if(job.contains("clip_box")&&!job.at("clip_box").is_null()){
-   auto b=job.at("clip_box").get<std::vector<double>>();
-   if(b.size()!=6||!std::all_of(b.begin(),b.end(),[](double x){return std::isfinite(x);})||b[0]>=b[3]||b[1]>=b[4]||b[2]>=b[5])throw std::runtime_error("Invalid clipping box");
-   points.setClip(true,b);
-   if(!points.active)for(unsigned i=0;i<6;i++){osg::Vec4d p(0,0,0,0);p[i%3]=i<3?1:-1;p[3]=i<3?-b[i]:b[i];scene->addClipPlane(new osg::ClipPlane(i,p));}
+   auto b=clipValues(job.at("clip_box"));auto frame=HorizontalFrame::read(job.at("clip_box"));
+   points.setClip(true,b,frame);
+   if(!points.active)for(unsigned i=0;i<6;i++)scene->addClipPlane(new osg::ClipPlane(i,frame.plane(i,b)));
   }
   // A small invisible pbuffer owns the GL context; the FBO owns export dimensions.
   std::string contextMode=job.value("context_mode",std::string("pbuffer"));

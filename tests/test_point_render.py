@@ -56,6 +56,12 @@ class PointRenderTests(unittest.TestCase):
         empty=self.render([self.record([1,0,0])],[.1,-1,-1,1,1,1])
         self.assertLess(empty[:,:,0].max(),30)
 
+    def test_rotated_box_keeps_centers_in_the_same_frame_as_source_crop(self):
+        selection=dict(bounds=[.1,-1,-1,1,1,1],origin=[0,0,0],yaw_degrees=45)
+        image=self.render([self.record([1,0,0]),self.record([0,0,1],.5)],selection)
+        self.assertGreater(int(image[:,:,2].max()),100)
+        self.assertLess(int(image[:,:,0].max()),30)
+
     def test_navigation_camera_basis(self):
         result=subprocess.run([str(RUNTIME/'mesh_viewer.exe'),'--test-navigation'],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)

@@ -14,6 +14,7 @@
 #include <cmath>
 #include <limits>
 #include "json.hpp"
+#include "horizontal_frame.h"
 
 // Independent OpenGL EWA splat implementation. Original PLY parameters stay in
 // the source; only this render cache contains activated scales and covariances.
@@ -22,12 +23,13 @@ struct PointScene {
  osg::Vec3d origin;osg::ref_ptr<osg::Node> node;
  osg::BoundingBoxd fitBounds;
  std::vector<double> bounds;
+ std::vector<osg::Vec2d> footprint;
  osg::ref_ptr<osg::Vec3Array> positions=new osg::Vec3Array;
  osg::ref_ptr<osg::Vec4Array> colors=new osg::Vec4Array;
  osg::ref_ptr<osg::Geometry> geometry;
  osg::ref_ptr<osg::Program> program;
  osg::ref_ptr<osg::DrawElementsUInt> order;
- osg::ref_ptr<osg::Uniform> viewport,clipEnabled,clipMin,clipMax,pointSize;
+ osg::ref_ptr<osg::Uniform> viewport,clipEnabled,clipMin,clipMax,clipRotation,pointSize;
  std::vector<float> sh;std::vector<osg::Vec4> baseColors;
  osg::Matrixd previous;bool updated=false;
 
@@ -43,6 +45,10 @@ struct PointScene {
   auto box=doc.at("bounds").get<std::vector<std::vector<double>>>();
   if(box.size()!=2||box[0].size()!=3||box[1].size()!=3)throw std::runtime_error("Invalid point bounds");
   bounds=box[0];bounds.insert(bounds.end(),box[1].begin(),box[1].end());
+  if(doc.contains("footprint"))for(auto& xy:doc.at("footprint")){
+   auto p=xy.get<std::vector<double>>();if(p.size()!=2||!std::isfinite(p[0])||!std::isfinite(p[1]))throw std::runtime_error("Invalid footprint");
+   footprint.push_back({p[0],p[1]});
+  }
   for(double v:bounds)if(!std::isfinite(v))throw std::runtime_error("Invalid point bounds");
   auto binary=path.parent_path()/std::filesystem::u8path(doc.at("data").get<std::string>());
   if(std::filesystem::file_size(binary)!=count*stride*sizeof(float))throw std::runtime_error("Truncated point cache");
@@ -83,11 +89,13 @@ struct PointScene {
 #version 150 compatibility
 in vec3 covA;in vec3 covB;
 uniform vec2 viewportSize;uniform bool gaussian;uniform bool clipEnabled;uniform float pointSize;
-uniform vec3 clipMin;uniform vec3 clipMax;
+uniform vec3 clipMin;uniform vec3 clipMax;uniform vec2 clipRotation;
 out vec3 covariance;out vec4 pointColor;out float skipPoint;
 void main(){
  vec3 local=gl_Vertex.xyz;vec4 eye=gl_ModelViewMatrix*gl_Vertex;
- skipPoint=(eye.z>=-0.01 || (clipEnabled && (any(lessThan(local,clipMin)) || any(greaterThan(local,clipMax)))))?1.0:0.0;
+ float c=clipRotation.x,s=clipRotation.y;
+ vec3 selected=vec3(c*local.x+s*local.y,-s*local.x+c*local.y,local.z);
+ skipPoint=(eye.z>=-0.01 || (clipEnabled && (any(lessThan(selected,clipMin)) || any(greaterThan(selected,clipMax)))))?1.0:0.0;
  gl_Position=gl_ProjectionMatrix*eye;pointColor=gl_Color;
  float radius=pointSize*0.5;covariance=vec3(radius*radius,0.0,radius*radius);
  if(gaussian && skipPoint<0.5){
@@ -133,6 +141,7 @@ void main(){
   pointSize=new osg::Uniform("pointSize",2.f);state->addUniform(pointSize);
   clipEnabled=new osg::Uniform("clipEnabled",false);clipMin=new osg::Uniform("clipMin",osg::Vec3());clipMax=new osg::Uniform("clipMax",osg::Vec3());
   state->addUniform(clipEnabled);state->addUniform(clipMin);state->addUniform(clipMax);state->addUniform(new osg::Uniform("gaussian",gaussian));
+  clipRotation=new osg::Uniform("clipRotation",osg::Vec2(1,0));state->addUniform(clipRotation);
   state->setMode(GL_LIGHTING,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE);
   if(gaussian){state->setAttributeAndModes(new osg::BlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA));state->setAttributeAndModes(new osg::Depth(osg::Depth::LESS,0,1,false));state->setMode(GL_BLEND,osg::StateAttribute::ON);}
   auto geode=new osg::Geode;geode->addDrawable(geometry);auto transform=new osg::MatrixTransform;
@@ -144,10 +153,15 @@ void main(){
   if(!program->getPCP(state)->isLinked())throw std::runtime_error("Point renderer requires OpenGL 3.2 / GLSL 1.50; shader program could not link");
  }
 
- void setClip(bool enabled,const std::vector<double>& bounds){
+ void setClip(bool enabled,const std::vector<double>& bounds,const HorizontalFrame& frame=HorizontalFrame()){
   if(!active)return;if(bounds.size()!=6)throw std::runtime_error("Invalid point clipping bounds");
-  clipEnabled->set(enabled);clipMin->set(osg::Vec3(bounds[0]-origin.x(),bounds[1]-origin.y(),bounds[2]-origin.z()));
-  clipMax->set(osg::Vec3(bounds[3]-origin.x(),bounds[4]-origin.y(),bounds[5]-origin.z()));
+  // Rebase the box around the cache origin in double precision before uniforms
+  // become float32. This also keeps the old world-axis box precise at large XY.
+  auto center=frame.local(origin);
+  clipEnabled->set(enabled);
+  clipMin->set(osg::Vec3(bounds[0]-center.x(),bounds[1]-center.y(),bounds[2]-center.z()));
+  clipMax->set(osg::Vec3(bounds[3]-center.x(),bounds[4]-center.y(),bounds[5]-center.z()));
+  double angle=frame.yaw*3.14159265358979323846/180.;clipRotation->set(osg::Vec2(std::cos(angle),std::sin(angle)));
  }
  void setPointSize(float size){
   if(active&&std::isfinite(size)&&size>=1.f&&size<=12.f)pointSize->set(size);

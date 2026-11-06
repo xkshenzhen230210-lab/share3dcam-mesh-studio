@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from converter import Cancelled, Control, convert, write_json
 from model_paths import resolve_model
+from spatial_frame import ClipBox
 
 
 def worker_command(job):
@@ -64,7 +65,7 @@ def convert_isolated(input_path,output_path,formats='both',control=None,clip_box
     if output==base or output in base.parents or output.is_relative_to(base):raise ValueError('输出目录必须独立于输入目录')
     if output.exists() and any(output.iterdir()):raise ValueError('输出目录不是空目录，请选择新目录')
     output.mkdir(parents=True,exist_ok=True);tasks=output/'.task';tasks.mkdir()
-    request={'source':str(source),'formats':formats,'clip_box':list(clip_box) if clip_box is not None else None,'preview':preview}
+    request={'source':str(source),'formats':formats,'clip_box':ClipBox(clip_box).tolist() if clip_box is not None else None,'preview':preview}
     write_json(output/'conversion_request.json',request)
     write_json(output/'mesh_result.json',{'state':'running','code':1,'data':{}})
     write_json(output/'conversion_report.json',dict(request,state='running'))

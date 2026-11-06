@@ -1,16 +1,10 @@
-1. 解析样例和协议，验证 GLB 坐标、纹理和 Tiles 层级。
-2. 完成流式 GLB→OBJ，添加坐标、材质、异常测试。
-3. 编译 OSG 写入器，实现 OSGB 几何与分页树，读回验证。
-4. 接入 Tiles 树及元数据输出，完成真实数据转换。
-5. Windows GUI、取消和日志，打包 EXE，交付说明。
+# Automatic horizontal alignment
 
-## 1.7.0 — LAS / wall plane deviation
-1. Streaming analysis + source-coordinate tests (`wall_flatness.py`, `tests/test_wall_flatness.py`). Check full-resolution results and cancellation before integrating UI.
-2. LAS import, point-size setting, native color overlay and wall panel (`studio.py`, `flatness_panel.py`, `native/viewer.cpp`, `native/point_scene.h`). Build and verify real UI callbacks and visible output.
-3. Real LAS / repeated-use checks, documentation, portable release and archive verification. See `wall-flatness-spec.md` and `todo.md`.
+Default to a horizontal working frame whose X axis follows the long side of the footprint's minimum-area rectangle. Preserve source coordinates and records. Align the clipping volume and standard views to this frame, so the scene appears straight without rewriting geometry. An Auto align checkbox restores original axes by reopening the prepared preview; it resets the clipping selection but keeps world-coordinate camera keys compatible.
 
-## 1.8.0 — Automatic wall inspection and deliverable report
-1. Detect connected near-vertical planes from a bounded spatial sample; assign all original points without duplicate membership, and explicitly account for unassigned and ambiguous points. Test separated coplanar walls, corners, defects, floors, units and sparse data before UI integration.
-2. Fit each detected wall using its full assigned point set, partition it into a configurable metric grid, and report both wall and zone deviations against the wall reference plane. Keep membership distance independent of acceptance tolerance; flag clipping-band and data-quality concerns.
-3. Generate a complete Chinese/English PDF, offline HTML, CSV, JSON, overview plan, indexed wall heatmaps and issue coordinates. Preserve source and isolate outputs. Render PDF pages and verify report totals and values.
-4. Add one-click whole-scan analysis with project metadata, defaults, progress/cancel, region navigation and direct report access; retain manual single-wall analysis. Validate on 溪瑞苑5栋, package and verify portable 1.8.0.
+1. Add a backwards-compatible oriented clipping descriptor: bounds in a horizontal frame, double-precision origin and yaw in degrees. Keep existing six-number boxes valid. Verify triangle clipping, point-record preservation and conservative native extraction bounds.
+2. Obtain footprint hulls while preparing point caches and while visiting coarse mesh geometry. Native viewer uses the resulting frame for bounds, box planes, picking, standard cameras and box focus. Native video uses the identical clipping frame. Check synthetic rotations and native rendering.
+3. Connect default automatic alignment and a restore toggle in the clipping panel. Propagate the descriptor to mesh/point export, video and selected-wall analysis. Full automatic wall analysis remains in original source coordinates.
+4. Run regression tests and actual LAS/mesh preview, crop and video checks; package and open the new release.
+
+Accuracy: horizontal rotation only; no scale, resampling, tilted floor or source overwrite. Full point-record filtering and triangle UV interpolation operate in the oriented selection but outputs stay in original coordinates. Degenerate footprints fall back safely. Detection reflects the footprint and is not semantic wall recognition.

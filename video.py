@@ -16,6 +16,7 @@ from model_paths import resolve_model
 from supervisor import convert_isolated
 from video_process import render_stream
 from camera_motion import CameraPath
+from spatial_frame import ClipBox
 
 RESOLUTIONS={'1080p':(1920,1080),'4K':(3840,2160)}
 FRAME_RATES=(24,30,60)
@@ -116,10 +117,7 @@ def render_video(source,output,keys,resolution='1080p',fps=30,control=None,clip_
     if resolution not in RESOLUTIONS:raise ValueError('分辨率请选择 1080p 或 4K / Select 1080p or 4K')
     keys=validate_keyframes(keys);frames=sample_frames(keys,fps);width,height=RESOLUTIONS[resolution]
     if clip_box is not None:
-        try:clip_box=[float(x) for x in clip_box]
-        except (ValueError,TypeError):raise ValueError('剪切盒无效 / Invalid clipping box') from None
-        if len(clip_box)!=6 or not all(math.isfinite(x) for x in clip_box) or any(clip_box[i]>=clip_box[i+3] for i in range(3)):
-            raise ValueError('剪切盒无效 / Invalid clipping box')
+        clip_box=ClipBox(clip_box).tolist()
     source=resolve_model(source);renderer=_tool('mesh_render');ffmpeg=_tool('ffmpeg');ffprobe=_tool('ffprobe')
     output.parent.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='share_video_model_') as model_work, \

@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from spatial_frame import ClipBox, footprint_hull
 
 
 PREVIEW_LIMIT = 300_000
@@ -310,12 +311,14 @@ def prepare_points(source, folder, control=None, preview=False):
         origin = (bounds[0] + bounds[1])/2
     stride = max(1, math.ceil(reader.count/PREVIEW_LIMIT)) if preview else 1
     rendered = 0
+    footprint = np.empty((0, 2))
     partial = folder/'points.bin.partial'
     try:
         with partial.open('xb') as output:
             for start, records, _ in reader.chunks(control):
                 xyz = reader.xyz(records)
                 _bounds_update(bounds, xyz)
+                footprint = footprint_hull(np.vstack([footprint, footprint_hull(xyz[:, :2])]))
                 selection = slice((-start) % stride, None, stride)
                 packed = _pack(reader, records[selection], xyz[selection], origin)
                 output.write(packed.tobytes())
@@ -329,6 +332,7 @@ def prepare_points(source, folder, control=None, preview=False):
         doc = {'format': 'share3dcam-points', 'version': 1, 'kind': reader.kind,
                'source': str(source), 'data': data.name, 'count': rendered, 'render_count': rendered,
                'source_count': reader.count, 'origin': origin.tolist(), 'bounds': bounds.tolist(),
+               'footprint': footprint.tolist(),
                'stride_floats': 62 if reader.kind == 'gaussian' else 7, 'sh_degree': reader.sh_degree,
                'preview': bool(preview), 'sampled': stride > 1, 'sample_stride': stride,
                'position_encoding': 'float32_relative_to_double_origin',
@@ -369,7 +373,7 @@ def _las_metadata(header):
 
 
 def _mask(xyz, box):
-    return np.all((xyz >= box[:3]) & (xyz <= box[3:]), axis=1)
+    return ClipBox(box).contains(xyz)
 
 
 def _crop_ply(reader, output, box, control):
@@ -511,7 +515,7 @@ def _verify_crop(reader, output, count, bounds, digest, control):
 def crop_points(source, outputfolder, clip_box, control=None):
     """Export the original format, preserving every selected record byte.
 
-    clip_box is [xmin,ymin,zmin,xmax,ymax,zmax], in original coordinates.
+    clip_box is a world-axis list or a ClipBox working-frame descriptor.
     None copies the complete original file without any re-encoding. Outputs
     become visible only after background verification; a failed check retries
     once from the original source and can never publish a success report.
@@ -523,9 +527,7 @@ def crop_points(source, outputfolder, clip_box, control=None):
     reader = _source(source)
     if not reader.count:
         raise ValueError('点数据为空 / Empty point source')
-    box = None if clip_box is None else np.asarray(clip_box, dtype=np.float64)
-    if box is not None and (box.shape != (6,) or not np.isfinite(box).all() or np.any(box[:3] >= box[3:])):
-        raise ValueError('剪切盒范围无效 / Invalid clipping box')
+    box = None if clip_box is None else ClipBox(clip_box)
     outputfolder.mkdir(parents=True, exist_ok=True)
     output = outputfolder/source.name
     if output.exists() or (outputfolder/'point_result.json').exists():

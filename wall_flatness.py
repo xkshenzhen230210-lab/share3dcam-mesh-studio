@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+from spatial_frame import ClipBox
 
 from converter import Control, write_json
 from point_data import _LasSource, _mask, PREVIEW_LIMIT
@@ -92,11 +93,9 @@ def analyze_wall(source, output, box, unit='m', tolerance_mm=5., control=None):
     control.check()
     source, output = Path(source).resolve(), Path(output).resolve()
     tolerance_mm = float(tolerance_mm)
-    box = np.asarray(box, dtype=np.float64)
+    box = ClipBox(box)
     if unit not in UNIT_MM or not math.isfinite(tolerance_mm) or tolerance_mm <= 0:
         raise ValueError('请选择坐标单位并输入正数容差 / Select units and a positive tolerance')
-    if box.shape != (6,) or not np.isfinite(box).all() or np.any(box[:3] >= box[3:]):
-        raise ValueError('墙面选区范围无效 / Invalid wall selection box')
     if source.suffix.lower() != '.las':
         raise ValueError('墙面分析需要 LAS 点云 / Wall analysis requires a LAS point cloud')
     before = source.stat()

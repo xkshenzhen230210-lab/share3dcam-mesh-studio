@@ -168,7 +168,7 @@ def measure_scan(source,unit='m',tolerance_mm=5.,zone_size_m=2.,metadata=None,co
         info['status']='review' if info['review_reasons'] else 'outside' if info['outside_count'] else 'within'
         reports.append(info)
     metadata={k:str((metadata or {}).get(k,'')).strip()[:200] for k in ('project','site','operator','reference')}
-    report=dict(version='1.8.4',source=str(source),source_size=before.st_size,source_mtime_ns=before.st_mtime_ns,
+    report=dict(version='1.9.0',source=str(source),source_size=before.st_size,source_mtime_ns=before.st_mtime_ns,
                 source_count=reader.count,unit=unit,tolerance_mm=tolerance_mm,zone_size_m=zone_size_m,
                 coordinate_steps_mm=steps,metadata=metadata,created_at=datetime.now().astimezone().isoformat(),
                 assigned_count=assigned,unassigned_count=reader.count-assigned,ambiguous_count=ambiguous,
