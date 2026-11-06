@@ -22,6 +22,8 @@ from video_panel import VideoPanel
 from workspace_tools import ClipHistory, available_output, read_recent, remember_model, save_view_snapshot
 from flatness_panel import FlatnessPanel
 from wall_flatness import analyze_wall
+from auto_wall_panel import AutoWallPanel
+from inspection_job import inspect_isolated
 
 MODEL_TYPES=[('三维模型 / 3D models','*.glb *.b3dm *.json *.osgb *.obj *.ply *.stl *.las'),('所有文件 / All files','*.*')]
 
@@ -31,7 +33,7 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.7.1 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.8.0 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
@@ -45,7 +47,7 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.7.1\n网格 · 点云 · 墙面 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.8.0\n网格 · 点云 · 墙面 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar();navigation_speed=tk.StringVar(value='1.5');mouse_sensitivity=tk.StringVar(value='1.0')
@@ -109,9 +111,13 @@ def gui():
         if not math.isfinite(size) or not 1<=size<=12:size=2.
         point_size.set(f'{size:g}')
         payload['point_size']=size
-        result=flat_panel.result
-        payload['analysis_source']=str(Path(result['output'])/'model.spoints') if result else ''
-        payload['analysis_visible']=bool(result and notebook.select()==str(flat_tab) and flat_panel.show_colors.get())
+        automatic=flat_modes.select()==str(auto_tab)
+        result=auto_panel.result if automatic else flat_panel.result
+        if automatic:payload['analysis_source']=auto_panel.overlay_path()
+        else:payload['analysis_source']=str(Path(result['output'])/'model.spoints') if result else ''
+        payload['analysis_visible']=bool(result and notebook.select()==str(flat_tab) and ((auto_panel.visible.get() or auto_panel.current) if automatic else flat_panel.show_colors.get()))
+        if automatic and result and notebook.select()==str(flat_tab):
+            payload.update(enabled=False,showBox=False)
         if camera is not None:payload['camera']=camera
         if move is not None:payload['move']=move
         seq+=1;write_json(ipc/'command.json',dict(payload,seq=seq))
@@ -281,6 +287,7 @@ def gui():
         video_panel.set_busy(blocked or not current)
         flat_panel.set_context(bool(current and loaded_source.suffix.lower()=='.las'),
                                enabled.get() and clip_valid,blocked)
+        auto_panel.set_context(bool(current and loaded_source.suffix.lower()=='.las'),blocked)
     def busy(active):
         nonlocal task_active
         task_active=active
@@ -309,6 +316,7 @@ def gui():
         measure_text.set('正在打开模型 / Opening model')
         point_kind=None
         flat_panel.reset('墙面分析支持 LAS / Wall analysis supports LAS')
+        auto_panel.reset(original if original.suffix.lower()=='.las' else None)
         ipc=Path(tempfile.mkdtemp(prefix='share_view_'));root.update_idletasks()
         write_json(ipc/'job.json',{'source':str(path),'parent':viewport.winfo_id()})
         if path.suffix=='.spoints':
@@ -456,8 +464,32 @@ def gui():
                 events.put(('flatness_error',str(error) or '已取消 / Canceled',0))
                 raise
         launch(task)
-    flat_scroll=ttk.Scrollbar(flat_tab);flat_scroll.pack(side='right',fill='y')
-    flat_canvas=tk.Canvas(flat_tab,bg='#edf1f7',highlightthickness=0,yscrollcommand=flat_scroll.set)
+    def analyze_whole_scan(settings):
+        src=current_source()
+        destination=target.get().strip().strip('"')
+        if not destination:raise ValueError('请选择输出目录 / Select output directory')
+        folder=available_output(Path(destination)/'wall_inspection')
+        auto_panel.invalidate()
+        auto_panel.message.set('正在自动分墙、计算全部归属点…\nDetecting walls and measuring source points…')
+        def task(control):
+            try:
+                report=inspect_isolated(src,folder,settings,control)
+                control.check();events.put(('inspection',report,100))
+            except Cancelled:
+                events.put(('inspection_error','已取消，没有生成新报告。\nCanceled; no new report.',0))
+                raise
+            except Exception as error:
+                events.put(('inspection_error',str(error) or '已取消 / Canceled',0))
+                raise
+        launch(task)
+    flat_modes=ttk.Notebook(flat_tab);flat_modes.pack(fill='both',expand=True)
+    auto_tab=ttk.Frame(flat_modes);manual_tab=ttk.Frame(flat_modes)
+    flat_modes.add(auto_tab,text='自动巡检 Auto');flat_modes.add(manual_tab,text='选区分析 Selection')
+    auto_panel=AutoWallPanel(auto_tab,analyze_whole_scan,command,
+                             lambda:viewport.winfo_width()/max(1,viewport.winfo_height()))
+    auto_panel.pack(fill='both',expand=True)
+    flat_scroll=ttk.Scrollbar(manual_tab);flat_scroll.pack(side='right',fill='y')
+    flat_canvas=tk.Canvas(manual_tab,bg='#edf1f7',highlightthickness=0,yscrollcommand=flat_scroll.set)
     flat_canvas.pack(fill='both',expand=True);flat_scroll.configure(command=flat_canvas.yview)
     flat_panel=FlatnessPanel(flat_canvas,select_wall,analyze_current_wall,command,
                              lambda:viewport.winfo_width()/max(1,viewport.winfo_height()))
@@ -486,6 +518,7 @@ def gui():
     def switch_tools(_=None):
         video_panel.stop();command()
     notebook.bind('<<NotebookTabChanged>>',switch_tools)
+    flat_modes.bind('<<NotebookTabChanged>>',lambda _:command())
     def export_model(crop):
         try:
             src=resolve_source(source.get());dst=target.get().strip().strip('"')
@@ -510,7 +543,8 @@ def gui():
         launch(task)
     open_btn.configure(command=open_model);export_btn.configure(command=lambda:export_model(False));crop_btn.configure(command=lambda:export_model(True));busy(False)
     def source_edited(*_):
-        if source.get()!=str(loaded_source):flat_panel.invalidate()
+        if source.get()!=str(loaded_source):
+            flat_panel.invalidate();auto_panel.invalidate()
         sync_controls()
     source.trace_add('write',source_edited)
     entry.bind('<Return>',lambda _:open_model())
@@ -524,6 +558,15 @@ def gui():
                     continue
                 if kind=='idle':busy(False);continue
                 if kind=='flatness_error':flat_panel.summary.set(text);continue
+                if kind=='inspection_error':auto_panel.message.set(text[:350]);continue
+                if kind=='inspection':
+                    if not cancel.is_set() and not closing:
+                        auto_panel.show_result(text)
+                        notebook.select(flat_tab);flat_modes.select(auto_tab)
+                        last_result=Path(text['output'])
+                        status.set(f'自动巡检完成 / Inspection complete · {len(text["walls"])} 墙面候选 · {text["zone_count"]} 分区 · '+str(last_result))
+                        progress.set(100);command(view='fit');sync_controls()
+                    continue
                 if kind=='flatness':
                     if not cancel.is_set() and not closing:
                         flat_panel.show_result(text);flat_panel.face_wall()

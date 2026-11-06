@@ -1,0 +1,12 @@
+{
+  "version": "1.8.0",
+  "archive": "SHARE3DCAM_MeshStudio_1.8.0_Windows_x64.zip",
+  "bytes": 274419164,
+  "sha256": "d433ae0d3af0a045f0627b2bfd9c55505d6e4dcba7305300c787f8aba64c5b6c",
+  "files_verified": 2037,
+  "tests_passed": 161,
+  "real_input_points": 10956838,
+  "wall_candidates": 40,
+  "zones": 94,
+  "report_pages": 50
+}

@@ -8,12 +8,16 @@ from supervisor import convert_isolated,worker_main
 
 
 def main():
-    parser=argparse.ArgumentParser(description='SHARE3DCAM Mesh Studio 1.7.1: Mesh, LAS, wall analysis and video')
+    parser=argparse.ArgumentParser(description='SHARE3DCAM Mesh Studio 1.8.0: Mesh, LAS, automatic wall inspection and video')
     parser.add_argument('--input');parser.add_argument('--output');parser.add_argument('--format',choices=['both','obj','osgb','3dtiles','source'],default='both')
     parser.add_argument('--inspect',action='store_true',help='只分析输入结构')
     parser.add_argument('--worker-job',help=argparse.SUPPRESS)
+    parser.add_argument('--inspection-job',help=argparse.SUPPRESS)
     parser.add_argument('--clip',type=float,nargs=6,metavar=('XMIN','YMIN','ZMIN','XMAX','YMAX','ZMAX'),help='保留剪切盒内模型 / Keep geometry inside box')
     args=parser.parse_args()
+    if args.inspection_job:
+        from inspection_job import worker_main as inspection_worker
+        raise SystemExit(inspection_worker(args.inspection_job))
     if args.worker_job:raise SystemExit(worker_main(args.worker_job))
     if not args.input:
         from studio import gui as studio_gui
