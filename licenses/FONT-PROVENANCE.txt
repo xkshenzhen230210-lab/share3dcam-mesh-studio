@@ -1,0 +1,7 @@
+Noto Sans SC Regular (weight 400)
+Source: https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf
+License: SIL Open Font License 1.1; see NotoSansSC-OFL.txt.
+Source license: https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/LICENSE
+Prepared 2026-11-06 as a static weight-400 instance using FontTools 4.68.0.
+Bundled in assets/NotoSansSC-Regular.ttf for PDF embedding and report figures.
+This font is redistributed under its original OFL license, independently of the application.
