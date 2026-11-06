@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -14,6 +15,31 @@ from tests.test_wall_segmentation import surface
 
 
 class InspectionJobTests(unittest.TestCase):
+    def test_failed_report_delivery_keeps_complete_local_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();source=root/'source.las';write_las(source,surface())
+            with patch('inspection_job.local_root',return_value=root/'local'),patch('inspection_job.publish_report',side_effect=PermissionError('share unavailable')):
+                report=inspect_isolated(source,root/'share/report',control=Control(lambda *_:None))
+            local=Path(report['output'])
+            self.assertTrue(local.is_relative_to(root/'local'))
+            self.assertEqual(report['delivery'],'local_fallback')
+            self.assertEqual(report['requested_output'],str(root/'share/report'))
+            self.assertTrue((local/'墙面平整度报告.pdf').is_file())
+            self.assertFalse((root/'share/report').exists())
+
+    def test_report_worker_does_not_create_private_temporary_directory_on_output_share(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();source=root/'source.las';write_las(source,surface())
+            real_temporary_directory=tempfile.TemporaryDirectory
+            def share_rejects_private_directory(*args,**kwargs):
+                if kwargs.get('dir') and Path(kwargs['dir'])==root:
+                    raise PermissionError('Shared drive rejects private temporary-directory ACL')
+                return real_temporary_directory(*args,**kwargs)
+            with patch('inspection_job.tempfile.TemporaryDirectory',side_effect=share_rejects_private_directory):
+                report=inspect_isolated(source,root/'report',control=Control(lambda *_:None))
+            self.assertTrue((Path(report['output'])/'墙面平整度报告.pdf').is_file())
+            self.assertEqual(Path(report['output']),root/'report')
+
     def test_worker_delivers_complete_report_with_unicode_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);source=root/'原始扫描.las';write_las(source,surface())

@@ -8,8 +8,15 @@ import sys
 import tempfile
 import time
 import traceback
+from datetime import datetime
+from uuid import uuid4
 
 from converter import Control,write_json
+from inspection_delivery import publish_report,source_unchanged
+
+
+def local_root():
+    return Path(os.environ.get('LOCALAPPDATA',tempfile.gettempdir()))/'SHARE3DCAM/MeshStudio/inspection'
 
 
 def _limit_worker_cpu():
@@ -47,11 +54,13 @@ def worker_main(job_path):
 def inspect_isolated(source,output,settings=None,control=None):
     control=control or Control();control.check()
     destination=Path(output).expanduser().resolve();source=Path(source).expanduser().resolve()
-    if destination.exists():raise FileExistsError('报告目录已存在 / Report destination exists')
-    destination.parent.mkdir(parents=True,exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='.inspection-job-',dir=destination.parent) as temporary:
+    try:exists=destination.exists()
+    except OSError:exists=False  # Retry delivery after local computation.
+    if exists:raise FileExistsError('报告目录已存在 / Report destination exists')
+    cache=local_root();cache.mkdir(parents=True,exist_ok=True);cache=cache.resolve()
+    with tempfile.TemporaryDirectory(prefix='.inspection-job-',dir=cache,ignore_cleanup_errors=True) as temporary:
         work=Path(temporary).resolve()
-        if work.parent!=destination.parent or not work.name.startswith('.inspection-job-'):raise ValueError('Invalid worker directory')
+        if work.parent!=cache or not work.name.startswith('.inspection-job-'):raise ValueError('Invalid worker directory')
         job=work/'job.json';write_json(job,dict(source=str(source),output=str(work/'result'),settings=settings or {}))
         command=[sys.executable,'--inspection-job',str(job)] if getattr(sys,'frozen',False) else [sys.executable,str(Path(__file__).with_name('app.py')),'--inspection-job',str(job)]
         environment=os.environ.copy();environment.update(OPENBLAS_NUM_THREADS='1',OMP_NUM_THREADS='1',MKL_NUM_THREADS='1',PYTHONIOENCODING='utf-8')
@@ -74,14 +83,20 @@ def inspect_isolated(source,output,settings=None,control=None):
                 details=(work/'worker.log').read_text(encoding='utf-8',errors='replace')[-4000:]
                 raise RuntimeError('自动分析未完成 / Automatic inspection failed: '+state.get('message',f'worker exit {process.returncode}')+'\n'+details)
             result=work/'result';report=json.loads((result/'report.json').read_text(encoding='utf-8'))
-            report['output']=str(destination);write_json(result/'report.json',report)
             shutil.copyfile(work/'worker.log',result/'worker.log')
-            control.check()
-            current=source.stat()
-            if (current.st_size,current.st_mtime_ns)!=(report['source_size'],report['source_mtime_ns']):
-                raise ValueError('分析期间源文件发生变化 / Source changed during analysis')
-            if destination.exists():raise FileExistsError('Report destination appeared during analysis')
-            result.rename(destination)
+            control.check();source_unchanged(source,report)
+            try:
+                report=publish_report(result,destination,source,report,control)
+            except FileExistsError:raise
+            except OSError as error:
+                # Keep the successfully computed result if the selected share
+                # cannot accept it. The UI must use and show this actual path.
+                control.check();source_unchanged(source,report)
+                saved=cache/('saved-'+datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid4().hex[:8])
+                report.update(output=str(saved),delivery='local_fallback',requested_output=str(destination),delivery_error=str(error))
+                write_json(result/'report.json',report);result.rename(saved)
+                control.log('共享目录保存失败，完整报告已保存在本机 / Report saved locally: '+str(saved),100)
+                return report
             control.log('完整报告已生成 / Complete report ready',100)
             return report
         finally:
