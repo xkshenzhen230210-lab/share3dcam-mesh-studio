@@ -20,6 +20,9 @@ def key(time, eye=(0,-10,0), center=(0,0,0), up=(0,0,1)):
 
 
 class VideoTests(unittest.TestCase):
+    def setUp(self):
+        selector=patch('video_process.select_encoder',return_value='x264');selector.start();self.addCleanup(selector.stop)
+
     def test_endpoints_and_midpoint_of_half_orbit_remain_valid(self):
         keys=validate_keyframes([key(0),key(2,(0,10,0))])
         self.assertEqual(camera_at(keys,0),{k:v for k,v in keys[0].items() if k!='time'})

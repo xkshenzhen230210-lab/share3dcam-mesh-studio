@@ -146,7 +146,7 @@ def render_video(source,output,keys,resolution='1080p',fps=30,control=None,clip_
             dict(load=RENDER_LOAD_TIMEOUT,context=RENDER_CONTEXT_TIMEOUT,stall=RENDER_STALL_TIMEOUT))
         control.check()
         control.log('正在自动检查视频 / Checking video automatically',92)
-        probe=control.run([ffprobe,'-v','error','-select_streams','v:0','-count_frames',
+        probe=control.run([ffprobe,'-cpuflags','0','-v','error','-select_streams','v:0','-count_frames',
                            '-show_entries','stream=codec_name,width,height,nb_read_frames,r_frame_rate,duration',
                            '-of','json',encoded],work)
         try:
@@ -158,13 +158,13 @@ def render_video(source,output,keys,resolution='1080p',fps=30,control=None,clip_
         except (ValueError,KeyError,IndexError,ZeroDivisionError,TypeError):passed=False
         if not passed:raise RuntimeError('视频完整性检查未通过 / Video integrity check failed')
         control.log('正在检查视频解码 / Checking video decoding',96)
-        control.run([ffmpeg,'-hide_banner','-nostdin','-v','error','-xerror','-err_detect','explode',
+        control.run([ffmpeg,'-hide_banner','-nostdin','-v','error','-cpuflags','0','-xerror','-err_detect','explode',
                      '-threads','2','-i',encoded,'-map','0:v:0','-an','-threads','2',
                      '-f','null','-'],work)
         control.check()
         report=dict(state='succeeded',source=str(source),output=str(output),resolution=resolution,
                     width=width,height=height,fps=fps,frames=count,duration=duration,
-                    codec='h264',quality='CRF 18',textures='original',clip_box=clip_box,
+                    codec='h264',encoder=render_state.get('encoder','x264'),quality=render_state.get('encoding_quality','CRF 18'),textures='original',clip_box=clip_box,
                     seconds=round(time.monotonic()-started,2),checks='passed',keyframes=keys)
         report.update(graphics=render_state.get('graphics',{}),memory=render_state.get('memory',{}),render_attempts=attempts)
         # Windows rename fails if another process created the destination meanwhile.

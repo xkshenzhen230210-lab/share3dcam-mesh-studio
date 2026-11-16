@@ -27,6 +27,9 @@ def keys():
 
 
 class VideoStallTests(unittest.TestCase):
+    def setUp(self):
+        selector=patch('video_process.select_encoder',return_value='x264');selector.start();self.addCleanup(selector.stop)
+
     def assert_stall_is_diagnosed(self,stage,timeout_name):
         original_popen=subprocess.Popen;children=[];jobs=[];messages=[]
         control=Control(lambda message,percent:messages.append(message));caught=None
