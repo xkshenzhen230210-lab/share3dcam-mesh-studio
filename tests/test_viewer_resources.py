@@ -13,6 +13,9 @@ class ViewerResourceTests(unittest.TestCase):
     def test_paged_mesh_loads_and_prepares_materials_without_camera_motion(self):
         self.exercise('mesh')
 
+    def test_gpu_viewer_idles_and_wakes_for_clipping_resize_and_snapshot(self):
+        self.exercise('gaussian_gpu')
+
     def exercise(self,kind):
         with tempfile.TemporaryDirectory() as d:
             folder=Path(d);root=tk.Tk();root.geometry('360x260+40+40');root.update()
@@ -30,7 +33,7 @@ class ViewerResourceTests(unittest.TestCase):
                 control=Control(lambda *a:None);control.run([RUNTIME/'mesh_writer.exe','write','write.json'],folder)
                 write_json(folder/'write.json',dict(output='root.osgb',children=[dict(path='leaf.osgb',center=[0,0,0],radius=2)]))
                 control.run([RUNTIME/'mesh_writer.exe','write','write.json'],folder);source=folder/'root.osgb'
-            write_json(folder/'job.json',dict(source=str(source),parent=root.winfo_id()))
+            write_json(folder/'job.json',dict(source=str(source),parent=root.winfo_id(),gpu_sort='required' if kind=='gaussian_gpu' else 'auto'))
             env=os.environ.copy();env['PATH']=str(RUNTIME)+os.pathsep+env.get('PATH','')
             env['OSG_LIBRARY_PATH']=str(RUNTIME/'osgPlugins-3.6.5')
             p=subprocess.Popen([str(RUNTIME/'mesh_viewer.exe'),'job.json'],cwd=folder,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
@@ -39,7 +42,10 @@ class ViewerResourceTests(unittest.TestCase):
                 deadline=time.monotonic()+timeout;state={}
                 while time.monotonic()<deadline:
                     root.update()
-                    if p.poll() is not None:self.fail(p.stderr.read().decode(errors='replace'))
+                    if p.poll() is not None:
+                        message=p.stderr.read().decode(errors='replace')
+                        if kind=='gaussian_gpu' and ('Compute/subgroup support unavailable' in message or 'GPU sort buffer/subgroup limits' in message):self.skipTest('Optional GPU sort unavailable on this GPU')
+                        self.fail(message)
                     try:state=json.loads((folder/'state.json').read_text())
                     except (OSError,ValueError):pass
                     if predicate(state):return state

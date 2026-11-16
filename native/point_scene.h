@@ -17,6 +17,7 @@
 #include "horizontal_frame.h"
 #include "polygon_clip.h"
 #include "gaussian_depth_order.h"
+#include "gpu_depth_order.h"
 
 // Independent OpenGL EWA splat implementation. Original PLY parameters stay in
 // the source; only this render cache contains activated scales and covariances.
@@ -30,12 +31,15 @@ struct PointScene {
  osg::ref_ptr<osg::Vec4Array> colors=new osg::Vec4Array;
  osg::ref_ptr<osg::Geometry> geometry;
  osg::ref_ptr<osg::Program> program;
- osg::ref_ptr<osg::DrawElementsUInt> order;
+ osg::ref_ptr<GpuIndexElements> order;
  GaussianDepthOrder depthOrder;
+ GpuDepthOrder gpuDepth;
+ std::string gpuSortMode="auto";bool verifyGpuSort=false;uint64_t gpuVerifiedUpdates=0;
  osg::ref_ptr<osg::Uniform> viewport,clipEnabled,clipMin,clipMax,clipRotation,pointSize;
  osg::ref_ptr<osg::Uniform> polygonCount,polygonVertices;
  std::vector<float> sh;size_t shStride=0;
  uint64_t sortUpdates=0,shUpdates=0;
+ unsigned sortWorkerHint=0;double sortSeconds=0;
  osg::Matrixd previous;bool updated=false,previousOrtho=false;
  osg::Vec3d previousDirection;
 
@@ -92,7 +96,7 @@ struct PointScene {
   geometry->setUseDisplayList(false);geometry->setUseVertexBufferObjects(true);geometry->setUserValue("share_point",true);geometry->setCullingActive(false);
   if(gaussian){
    geometry->setVertexAttribArray(6,covA,osg::Array::BIND_PER_VERTEX);geometry->setVertexAttribArray(7,covB,osg::Array::BIND_PER_VERTEX);
-   order=new osg::DrawElementsUInt(GL_POINTS);order->resize(count);std::iota(order->begin(),order->end(),0);geometry->addPrimitiveSet(order);
+   order=new GpuIndexElements;order->resize(count);std::iota(order->begin(),order->end(),0);geometry->addPrimitiveSet(order);
   }else geometry->addPrimitiveSet(new osg::DrawArrays(GL_POINTS,0,count));
   auto state=geometry->getOrCreateStateSet();program=new osg::Program;
   program->addBindAttribLocation("covA",6);program->addBindAttribLocation("covB",7);
@@ -210,7 +214,28 @@ void main(){
   osg::Vec3d eye,center,up;camera->getViewMatrixAsLookAt(eye,center,up);eye-=origin;auto direction=center-(eye+origin);direction.normalize();
   // Translation and roll preserve relative depths. Use exact axis equality:
   // no angular threshold, stale order or approximation during rotation.
-  if(directionChanged){depthOrder.sort(*positions,direction,*order);order->dirty();sortUpdates++;}
+  if(directionChanged){
+   auto started=std::chrono::steady_clock::now();bool onGpu=false;
+   if(gpuSortMode!="disabled"&&(positions->size()>=1000000||gpuSortMode=="required")){
+    auto context=camera->getGraphicsContext();
+    if(context&&context->makeCurrent()){
+     if(gpuDepth.initialize(*context->getState(),*positions)){
+      try{
+       gpuDepth.sort(direction);order->gpuBuffer=gpuDepth.indices;onGpu=true;
+       if(verifyGpuSort){
+        auto actual=gpuDepth.readback();std::vector<unsigned> expected(positions->size());std::iota(expected.begin(),expected.end(),0);
+        std::vector<float> depths(positions->size());for(size_t i=0;i<depths.size();i++)depths[i]=(*positions)[i]*direction;
+        std::sort(expected.begin(),expected.end(),[&](unsigned a,unsigned b){return depths[a]==depths[b]?a<b:depths[a]>depths[b];});
+        if(actual!=expected)throw std::runtime_error("GPU depth order differs from complete CPU reference");gpuVerifiedUpdates++;
+       }
+      }catch(const std::exception& error){gpuDepth.reason=error.what();gpuDepth.release();order->gpuBuffer=0;onGpu=false;if(gpuSortMode=="required"||verifyGpuSort)throw;}
+     }
+    }
+    if(!onGpu&&gpuSortMode=="required")throw std::runtime_error("GPU sort required: "+gpuDepth.reason);
+   }
+   if(!onGpu){order->gpuBuffer=0;depthOrder.sort(*positions,direction,*order,sortWorkerHint);order->dirty();}
+   sortSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();sortUpdates++;
+  }
   if(!degree||!colorChanged)return;
   shUpdates++;
   for(size_t i=0;i<positions->size();i++){
@@ -222,5 +247,5 @@ void main(){
    for(int channel=0;channel<3;channel++){double color=.5;for(int k=0;k<(degree+1)*(degree+1);k++)color+=basis[k]*sh[i*shStride+k*3+channel];(*colors)[i][channel]=std::max(0.0,color);}
   }colors->dirty();
  }
- nlohmann::json workReport()const{return {{"count",positions->size()},{"sort_updates",sortUpdates},{"sh_updates",shUpdates},{"sort_workspace_bytes",depthOrder.workspaceBytes()},{"sh_storage_bytes",sh.capacity()*sizeof(float)}};}
+ nlohmann::json workReport()const{return {{"count",positions->size()},{"sort_backend",gpuDepth.active?"gpu":"cpu"},{"gpu_verified_updates",gpuVerifiedUpdates},{"gpu_sort_bytes",gpuDepth.bytes},{"gpu_sort_fallback",gpuDepth.reason},{"sort_updates",sortUpdates},{"sort_workers",depthOrder.lastWorkers},{"sort_seconds",sortSeconds},{"sh_updates",shUpdates},{"sort_workspace_bytes",depthOrder.workspaceBytes()},{"sh_storage_bytes",sh.capacity()*sizeof(float)}};}
 };

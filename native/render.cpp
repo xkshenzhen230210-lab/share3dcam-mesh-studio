@@ -160,7 +160,9 @@ int main(int argc,char** argv){
   auto publish=[&](const std::string& next){phase=next;memoryReport["system"]=renderMemorySnapshot();progress(progressPath,{{"state",phase},{"frame",completed},{"total",frames.size()},{"graphics",graphics},{"memory",memoryReport}});};
   publish("loading");
   TextureMemory memory(progressPath.parent_path(),job.value("optimize_memory",true));
-  FullDetail loader;loader.memory=&memory;PointScene points;osg::ref_ptr<osg::Node> model;
+  FullDetail loader;loader.memory=&memory;PointScene points;points.sortWorkerHint=job.value("sort_workers",0u);osg::ref_ptr<osg::Node> model;
+  points.gpuSortMode=job.value("gpu_sort",std::string("auto"));points.verifyGpuSort=job.value("verify_gpu_sort",false);
+  if(points.gpuSortMode!="auto"&&points.gpuSortMode!="required"&&points.gpuSortMode!="disabled")throw std::runtime_error("Invalid GPU sort mode");
   size_t pages=0;loader.pageLoaded=[&](){pages++;progress(progressPath,{{"state","loading"},{"frame",0},{"pages",pages},{"total",frames.size()}});};
   if(points.load(fs::u8path(job.at("source").get<std::string>())))model=points.node;
   else model=loader.file(fs::u8path(job.at("source").get<std::string>()));publish("materials");DisplayMaterials materials;model->accept(materials);
@@ -191,7 +193,7 @@ int main(int argc,char** argv){
   }
   if(!context)throw std::runtime_error("Cannot create offscreen OpenGL context");
   publish("initializing");
-  osgViewer::Viewer viewer;viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);viewer.setReleaseContextAtEndOfFrameHint(false);
+  osgViewer::Viewer viewer;viewer.setUseConfigureAffinity(false);viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);viewer.setReleaseContextAtEndOfFrameHint(false);
   auto camera=viewer.getCamera();camera->setGraphicsContext(context);camera->setViewport(0,0,width,height);camera->setClearColor(osg::Vec4(.055,.08,.12,1));
   camera->setRenderTargetImplementation(osg::Camera::FRAME_BUFFER_OBJECT);camera->setDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);camera->setReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
   osg::ref_ptr<osg::Image> image=new osg::Image;image->allocateImage(width,height,1,GL_RGB,GL_UNSIGNED_BYTE,1);
@@ -215,9 +217,11 @@ int main(int argc,char** argv){
   }};gpuMemory();
   if(points.active)points.checkProgram(*context->getState());
   const size_t bytes=size_t(width)*height*3;
+  double frameSeconds=0;
   for(size_t i=0;i<frames.size();i++){
    publish(i==0?"first_frame":"rendering");
-   cameraPose(camera,frames[i],double(width)/height);points.update(camera);meshPolygon.update(camera);viewer.frame(double(i)/fps);
+   cameraPose(camera,frames[i],double(width)/height);points.update(camera);meshPolygon.update(camera);
+   auto frameStart=std::chrono::steady_clock::now();viewer.frame(double(i)/fps);frameSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-frameStart).count();
    if(i==0||i%30==0||i+1==frames.size()){TextureInventory resident;model->accept(resident);memoryReport["image_bytes_after_upload"]=resident.bytes;}
    auto glError=glGetError();
    if(glError==GL_OUT_OF_MEMORY){errorKind="gpu_memory";throw std::runtime_error("显存分配失败 / GPU memory allocation failed (OpenGL 1285); system RAM and GPU memory are separate limits");}
@@ -229,6 +233,7 @@ int main(int argc,char** argv){
    completed=i+1;publish("rendering");
   }
   memoryReport["point_render"]=points.workReport();
+  memoryReport["frame_draw_seconds"]=frameSeconds;
   publish("encoding");
   if(fflush(stdout)!=0)throw std::runtime_error("Cannot flush rendered frames");
   publish("closing");

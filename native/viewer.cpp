@@ -250,15 +250,17 @@ void writeState(const json& value,const wchar_t* destination=L"state.json"){
 }
 void state(json value){if(value.contains("ready")){value["rendered_frames"]=renderedFrames;value["loaded_mesh_drawables"]=loadedMeshDrawables;}writeState(value);}
 int main(int argc,char**argv){try{
- if(argc==3&&(std::string(argv[1])=="--test-depth-sort"||std::string(argv[1])=="--benchmark-depth-sort")){
+ if((argc==3||argc==4)&&(std::string(argv[1])=="--test-depth-sort"||std::string(argv[1])=="--benchmark-depth-sort")){
+  unsigned workerHint=argc==4?unsigned(std::stoul(argv[3])):0;
   osg::ref_ptr<osg::Vec3Array> positions=new osg::Vec3Array;osg::Vec3d direction(0,1,0);PointScene data;
   if(std::string(argv[1])=="--benchmark-depth-sort"){data.load(fs::u8path(argv[2]));positions=data.positions;direction.set(.3,.8,-.2);direction.normalize();}
-  else{std::ifstream input(fs::u8path(argv[2]));json job;input>>job;auto d=job.at("direction");direction.set(d[0],d[1],d[2]);for(auto& p:job.at("positions"))positions->push_back({p[0],p[1],p[2]});}
+  else{std::ifstream input(fs::u8path(argv[2]));json job;input>>job;workerHint=job.value("workers",workerHint);auto d=job.at("direction");direction.set(d[0],d[1],d[2]);for(auto& p:job.at("positions"))positions->push_back({p[0],p[1],p[2]});}
   std::vector<float> depths(positions->size());std::vector<unsigned> reference(positions->size());std::iota(reference.begin(),reference.end(),0);
   for(size_t i=0;i<depths.size();i++)depths[i]=(*positions)[i]*direction;
   auto now=std::chrono::steady_clock::now();std::sort(reference.begin(),reference.end(),[&](unsigned a,unsigned b){return depths[a]==depths[b]?a<b:depths[a]>depths[b];});double baseline=std::chrono::duration<double>(std::chrono::steady_clock::now()-now).count();
-  GaussianDepthOrder sorter;osg::ref_ptr<osg::DrawElementsUInt> result=new osg::DrawElementsUInt(GL_POINTS);now=std::chrono::steady_clock::now();sorter.sort(*positions,direction,*result);double optimized=std::chrono::duration<double>(std::chrono::steady_clock::now()-now).count();
+  GaussianDepthOrder sorter;osg::ref_ptr<osg::DrawElementsUInt> result=new osg::DrawElementsUInt(GL_POINTS);now=std::chrono::steady_clock::now();sorter.sort(*positions,direction,*result,workerHint);double optimized=std::chrono::duration<double>(std::chrono::steady_clock::now()-now).count();
   json output={{"matches_reference",std::equal(reference.begin(),reference.end(),result->begin())},{"count",positions->size()},{"reference_seconds",baseline},{"radix_seconds",optimized}};
+  output["workers"]=sorter.lastWorkers;
   if(std::string(argv[1])=="--test-depth-sort")output["indices"]=std::vector<unsigned>(result->begin(),result->end());std::cout<<output.dump();return 0;
  }
  if(argc==3&&std::string(argv[1])=="--test-polygon"){
@@ -330,6 +332,8 @@ int main(int argc,char**argv){try{
  if(argc!=2)throw std::runtime_error("Expected job.json");std::ifstream jf(fs::u8path(argv[1]));json job;jf>>job;
  osg::ref_ptr<osgDB::Options> readOptions=new osgDB::Options("noRotation");
  PointScene points;osg::ref_ptr<osg::Node> model;
+ points.gpuSortMode=job.value("gpu_sort",std::string("auto"));
+ if(points.gpuSortMode!="auto"&&points.gpuSortMode!="required"&&points.gpuSortMode!="disabled")throw std::runtime_error("Invalid GPU sort mode");
  std::unique_ptr<PointScene> analysis;
  std::string analysisSource,analysisError;
  bool analysisVisible=false;
@@ -341,7 +345,7 @@ int main(int argc,char**argv){try{
  HWND child=CreateWindowW(wc.lpszClassName,L"SHARE3DCAM 3D",WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS|WS_CLIPCHILDREN,0,0,w,h,parent,nullptr,wc.hInstance,nullptr);
  auto traits=new osg::GraphicsContext::Traits;traits->x=0;traits->y=0;traits->width=w;traits->height=h;traits->windowDecoration=false;traits->doubleBuffer=true;traits->inheritedWindowData=new osgViewer::GraphicsWindowWin32::WindowData(child);
  auto gc=osg::GraphicsContext::createGraphicsContext(traits);if(!gc)throw std::runtime_error("OpenGL context failed");
- osgViewer::Viewer viewer;viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);viewer.getCamera()->setGraphicsContext(gc);viewer.getCamera()->setViewport(0,0,w,h);viewer.getCamera()->setProjectionMatrixAsPerspective(35.,double(w)/h,.01,100000.);viewer.getCamera()->setClearColor(osg::Vec4(.055,.08,.12,1));
+ osgViewer::Viewer viewer;viewer.setUseConfigureAffinity(false);viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);viewer.getCamera()->setGraphicsContext(gc);viewer.getCamera()->setViewport(0,0,w,h);viewer.getCamera()->setProjectionMatrixAsPerspective(35.,double(w)/h,.01,100000.);viewer.getCamera()->setClearColor(osg::Vec4(.055,.08,.12,1));
  auto scene=new osg::Group;auto clip=new osg::ClipNode;clip->addChild(model);MeshPolygonClip meshPolygon(*clip);scene->addChild(clip);
  auto box=new osg::Geode;auto geom=new osg::Geometry;auto vertices=new osg::Vec3dArray(24);geom->setVertexArray(vertices);geom->addPrimitiveSet(new osg::DrawArrays(GL_LINES,0,24));auto colors=new osg::Vec4Array;colors->push_back(osg::Vec4(1,.52,.18,1));geom->setColorArray(colors,osg::Array::BIND_OVERALL);box->addDrawable(geom);box->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);box->getOrCreateStateSet()->setAttribute(new osg::LineWidth(2));scene->addChild(box);box->setNodeMask(0);
  auto marker=new osg::MatrixTransform;
@@ -565,7 +569,7 @@ int main(int argc,char**argv){try{
    measurement["distance"]=delta.length();
    measurement["delta"]=vec(delta);
   }
-  state({{"ready",true},{"bounds",lohi},{"clip_frame",frame.json()},{"polygon",polygonJson(polygon)},{"polygon_draft",polygonJson(draftPolygon)},{"polygon_drawing",polygonDrawing},{"polygon_error",polygonError},{"polygon_revision",polygonRevision},{"applied_seq",last},{"analysis_visible",analysisVisible},{"analysis_source",analysisSource},{"analysis_error",analysisError},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
+  state({{"ready",true},{"point_render",points.workReport()},{"bounds",lohi},{"clip_frame",frame.json()},{"polygon",polygonJson(polygon)},{"polygon_draft",polygonJson(draftPolygon)},{"polygon_drawing",polygonDrawing},{"polygon_error",polygonError},{"polygon_revision",polygonRevision},{"applied_seq",last},{"analysis_visible",analysisVisible},{"analysis_source",analysisSource},{"analysis_error",analysisError},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
  };
  auto lastState=std::chrono::steady_clock::now(),lastMove=lastState;publish();
  while(!viewer.done()&&IsWindow(parent)){
