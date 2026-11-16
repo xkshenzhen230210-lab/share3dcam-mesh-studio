@@ -121,6 +121,7 @@ struct DisplayMaterials:osg::NodeVisitor {
    bool point=false;if(geometry->getUserValue("share_point",point)&&point)continue;
    auto state=geometry->getOrCreateStateSet();bool textured=texture(state);
    for(auto ancestor:getNodePath())if(texture(ancestor->getStateSet()))textured=true;
+   state->addUniform(new osg::Uniform("polygonTextured",textured));
    state->setMode(GL_LIGHTING,(textured?osg::StateAttribute::OFF:osg::StateAttribute::ON)|osg::StateAttribute::OVERRIDE);
    if(!textured){if(!geometry->getNormalArray())osgUtil::SmoothingVisitor::smooth(*geometry);auto mat=new osg::Material;mat->setColorMode(osg::Material::AMBIENT_AND_DIFFUSE);mat->setAmbient(osg::Material::FRONT_AND_BACK,osg::Vec4(.3,.3,.3,1));state->setAttributeAndModes(mat,osg::StateAttribute::ON);}
    geometry->setUseDisplayList(false);geometry->setUseVertexBufferObjects(true);
@@ -160,11 +161,12 @@ int main(int argc,char** argv){
   if(points.load(fs::u8path(job.at("source").get<std::string>())))model=points.node;
   else model=loader.file(fs::u8path(job.at("source").get<std::string>()));publish("materials");DisplayMaterials materials;model->accept(materials);
   memoryReport=memory.report(model);
-  osg::ref_ptr<osg::ClipNode> scene=new osg::ClipNode;scene->addChild(model);
+  osg::ref_ptr<osg::ClipNode> scene=new osg::ClipNode;scene->addChild(model);MeshPolygonClip meshPolygon(*scene);
   if(job.contains("clip_box")&&!job.at("clip_box").is_null()){
    auto b=clipValues(job.at("clip_box"));auto frame=HorizontalFrame::read(job.at("clip_box"));
    points.setClip(true,b,frame);
-   if(!points.active)for(unsigned i=0;i<6;i++)scene->addClipPlane(new osg::ClipPlane(i,frame.plane(i,b)));
+   auto polygon=readPolygon(job.at("clip_box"));points.setPolygon(polygon,frame);
+   if(!points.active){setMeshClip(*scene,true,b,frame);meshPolygon.set(polygon,frame,true);}
   }
   // A small invisible pbuffer owns the GL context; the FBO owns export dimensions.
   std::string contextMode=job.value("context_mode",std::string("pbuffer"));
@@ -211,7 +213,7 @@ int main(int argc,char** argv){
   const size_t bytes=size_t(width)*height*3;
   for(size_t i=0;i<frames.size();i++){
    publish(i==0?"first_frame":"rendering");
-   cameraPose(camera,frames[i],double(width)/height);points.update(camera);viewer.frame(double(i)/fps);
+   cameraPose(camera,frames[i],double(width)/height);points.update(camera);meshPolygon.update(camera);viewer.frame(double(i)/fps);
    if(i==0||i%30==0||i+1==frames.size()){TextureInventory resident;model->accept(resident);memoryReport["image_bytes_after_upload"]=resident.bytes;}
    auto glError=glGetError();
    if(glError==GL_OUT_OF_MEMORY){errorKind="gpu_memory";throw std::runtime_error("显存分配失败 / GPU memory allocation failed (OpenGL 1285); system RAM and GPU memory are separate limits");}

@@ -9,6 +9,7 @@ class ClipBox:
             self.__dict__.update(value.__dict__)
             return
         self.oriented = isinstance(value, dict)
+        self.polygon=None
         try:
             self.bounds = np.asarray(value['bounds'] if self.oriented else value, dtype=float)
             self.origin = np.asarray(value.get('origin', [0, 0, 0]) if self.oriented else [0, 0, 0], dtype=float)
@@ -20,6 +21,9 @@ class ClipBox:
         angle = math.radians(self.yaw)
         c, s = math.cos(angle), math.sin(angle)
         self.rotation = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+        if self.oriented and value.get('polygon') is not None:
+            from polygon_selection import validate_polygon
+            self.polygon=validate_polygon(value['polygon'])
 
     def local(self, xyz):
         return (np.asarray(xyz) - self.origin) @ self.rotation
@@ -29,7 +33,11 @@ class ClipBox:
 
     def contains(self, xyz):
         local = self.local(xyz)
-        return np.all((local >= self.bounds[:3]) & (local <= self.bounds[3:]), axis=-1)
+        inside=np.all((local >= self.bounds[:3]) & (local <= self.bounds[3:]), axis=-1)
+        if self.polygon is not None:
+            from polygon_selection import contains_xy
+            inside &= contains_xy(local[...,:2],self.polygon)
+        return inside
 
     def world_bounds(self):
         corners = self.world([[self.bounds[i], self.bounds[1+j], self.bounds[2+k]]
@@ -42,7 +50,9 @@ class ClipBox:
     def tolist(self):
         if not self.oriented:
             return self.bounds.tolist()
-        return dict(bounds=self.bounds.tolist(), origin=self.origin.tolist(), yaw_degrees=self.yaw)
+        result=dict(bounds=self.bounds.tolist(), origin=self.origin.tolist(), yaw_degrees=self.yaw)
+        if self.polygon is not None:result['polygon']=self.polygon.tolist()
+        return result
 
 
 def footprint_hull(xy):

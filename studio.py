@@ -36,10 +36,11 @@ def resolve_source(value):
 
 
 def gui():
-    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.9.0 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
+    root=tk.Tk();root.title('SHARE3DCAM Mesh Studio 1.10.0 | 模型工作台');root.geometry('1360x900+20+20');root.minsize(1180,820);root.configure(bg='#edf1f7')
     style=ttk.Style();style.theme_use('clam')
     style.configure('.',font=('Microsoft YaHei UI',10),background='#edf1f7',foreground='#17263c')
     style.configure('TButton',padding=(9,7));style.configure('TEntry',padding=6,fieldbackground='white')
+    style.configure('Polygon.TButton',padding=(3,5),font=('Microsoft YaHei UI',9))
     style.configure('Accent.TButton',background='#e5473b',foreground='white',font=('Microsoft YaHei UI',10,'bold'))
     style.map('Accent.TButton',background=[('active','#c6362c'),('disabled','#b9c1cd')])
     style.configure('TProgressbar',background='#e5473b',troughcolor='#d8e0eb',thickness=6)
@@ -50,7 +51,7 @@ def gui():
     brand=tk.Frame(header,bg='#101d30');brand.pack(side='left')
     tk.Label(brand,text='SHARE3DCAM 电商销售中心',fg='white',bg='#101d30',font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
     tk.Label(brand,text='SHARE3DCAM E-commerce Sales Center',fg='#a8bbd2',bg='#101d30',font=('Segoe UI',11)).pack(anchor='w',pady=(5,0))
-    tk.Label(header,text='MESH STUDIO  1.9.0\n网格 · 点云 · 墙面 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
+    tk.Label(header,text='MESH STUDIO  1.10.0\n网格 · 点云 · 墙面 · 视频',bg='#101d30',fg='#a8bbd2',font=('Microsoft YaHei UI',11),justify='right').pack(side='right',padx=24)
     main=ttk.Frame(root,padding=(18,12));main.pack(fill='both',expand=True)
     source=tk.StringVar();target=tk.StringVar();fmt=tk.StringVar(value='OSGB + OBJ');status=tk.StringVar(value='选择模型并点击打开 / Select a model and click Open')
     progress=tk.DoubleVar();enabled=tk.BooleanVar();show_box=tk.BooleanVar(value=True);wire=tk.BooleanVar();navigation_speed=tk.StringVar(value='1.5');mouse_sensitivity=tk.StringVar(value='1.0')
@@ -60,6 +61,8 @@ def gui():
     point_size=tk.StringVar(value='2')
     point_kind=None
     clip_frame={};prepared_view=None
+    polygon=[];polygon_drawing=False;polygon_revision=-1
+    polygon_note=tk.StringVar(value='可画凹多边形；沿高度方向裁剪。\nDraw a polygon; crop through height.')
     auto_align=tk.BooleanVar(value=True)
     alignment_note=tk.StringVar(value='水平主边对齐；切换后重置选区。\nAlign horizontal edges; switching resets selection.')
     recent_path=Path(os.environ.get('LOCALAPPDATA',tempfile.gettempdir()))/'SHARE3DCAM/MeshStudio/recent.json'
@@ -97,7 +100,7 @@ def gui():
     content=ttk.Frame(main);content.pack(fill='both',expand=True)
     left=ttk.Frame(content);left.pack(side='left',fill='both',expand=True)
     toolbar=ttk.Frame(left);toolbar.pack(fill='x',pady=(0,7))
-    def command(view='',camera=None,move=None):
+    def command(view='',camera=None,move=None,polygon_action=None):
         nonlocal seq
         if not ipc or not clip_history:return
         video_mode=notebook.select()==str(video_tab)
@@ -122,6 +125,7 @@ def gui():
             payload.update(enabled=False,showBox=False)
         if camera is not None:payload['camera']=camera
         if move is not None:payload['move']=move
+        if polygon_action is not None:payload['polygon_action']=polygon_action
         seq+=1;write_json(ipc/'command.json',dict(payload,seq=seq))
     move_entry.configure(command=command);move_entry.bind('<Return>',lambda _:command());move_entry.bind('<FocusOut>',lambda _:command())
     mouse_entry.configure(command=command);mouse_entry.bind('<Return>',lambda _:command());mouse_entry.bind('<FocusOut>',lambda _:command())
@@ -166,7 +170,20 @@ def gui():
     canvas=tk.Canvas(clip_tab,bg='#edf1f7',highlightthickness=0,yscrollcommand=scroll.set);canvas.pack(fill='both',expand=True);scroll.configure(command=canvas.yview)
     side=ttk.Frame(canvas);side_window=canvas.create_window((0,0),window=side,anchor='nw')
     side.bind('<Configure>',lambda e:canvas.configure(scrollregion=canvas.bbox('all')));canvas.bind('<Configure>',lambda e:canvas.itemconfigure(side_window,width=e.width))
-    ttk.Label(side,text='剪切盒 / Clipping box',font=('Microsoft YaHei UI',14,'bold')).pack(anchor='w',pady=(0,8))
+    ttk.Label(side,text='裁剪范围 / Crop selection',font=('Microsoft YaHei UI',14,'bold')).pack(anchor='w',pady=(0,8))
+    def polygon_action(action):
+        nonlocal polygon_drawing
+        if action=='start':
+            polygon_drawing=True;enabled.set(True)
+            polygon_note.set('左键加点；点起点或 Enter 完成。\n右键/退格撤点；Esc 取消。\nClick vertices; Enter finishes.\nRight-click undoes; Esc cancels.')
+        flat_panel.invalidate();video_panel.stop()
+        command('top' if action=='start' else '',polygon_action=action);sync_controls()
+    polygon_buttons=[]
+    for items in ((('手绘范围 / Draw','start'),('完成 / Finish','finish')),(('撤点 / Undo','undo'),('取消 / Cancel','cancel'),('清除 / Clear','clear'))):
+        row=ttk.Frame(side);row.pack(fill='x',pady=(0,4))
+        for label,action in items:
+            button=ttk.Button(row,text=label,style='Polygon.TButton',command=lambda a=action:polygon_action(a));button.pack(side='left',padx=(0,3));polygon_buttons.append((action,button))
+    ttk.Label(side,textvariable=polygon_note,wraplength=280,foreground='#536b85',justify='left',font=('Microsoft YaHei UI',9)).pack(anchor='w',pady=(0,8))
     def alignment_changed():
         if loaded_source and prepared_view:
             start_viewer(prepared_view,loaded_source,None)
@@ -174,7 +191,12 @@ def gui():
     alignment_btn.pack(anchor='w')
     ttk.Label(side,textvariable=alignment_note,foreground='#536b85',wraplength=280,justify='left',font=('Microsoft YaHei UI',9)).pack(anchor='w',pady=(3,8))
     def clip_selection():
-        return dict(clip_frame,bounds=list(clip_history.box)) if auto_align.get() else list(clip_history.box)
+        box=list(clip_history.box)
+        if polygon:
+            box[0]=min(p[0] for p in polygon);box[1]=min(p[1] for p in polygon)
+            box[3]=max(p[0] for p in polygon);box[4]=max(p[1] for p in polygon)
+            return dict(clip_frame,bounds=box,polygon=polygon)
+        return dict(clip_frame,bounds=box) if auto_align.get() else box
 
     def clip_toggle():
         if enabled.get() and not commit_clip():enabled.set(False)
@@ -236,7 +258,7 @@ def gui():
         if pending is not None:root.after_cancel(pending);pending=None
         commit_clip(restore=True)
         slider_drag=False
-    for i in (0,3,1,4,2,5):
+    for i in (2,5,0,3,1,4):
         label=f'{"XYZ"[i%3]} '+('最小 / Min' if i<3 else '最大 / Max')
         row=ttk.Frame(side);row.pack(fill='x',pady=(6,0));ttk.Label(row,text=label).pack(side='left');number=ttk.Entry(row,textvariable=values[i],width=20,justify='right');number.pack(side='right');number_entries.append(number)
         slider=ttk.Scale(side,variable=values[i],from_=-1,to=1,command=debounce);slider.pack(fill='x',pady=(3,7));sliders.append((i,slider))
@@ -269,7 +291,7 @@ def gui():
     output_btn=ttk.Button(export,text='浏览 / Browse',command=choose_output);output_btn.pack(side='left',padx=6)
     combo=ttk.Combobox(export,textvariable=fmt,values=['OSGB + OBJ','OSGB','OBJ','3D Tiles','原格式 / Source'],state='readonly',width=16);combo.pack(side='left')
     actions=ttk.Frame(main);actions.pack(fill='x');export_btn=ttk.Button(actions,text='转换完整模型 / Export full');export_btn.pack(side='left')
-    crop_btn=ttk.Button(actions,text='导出盒内模型 / Export clipped',style='Accent.TButton');crop_btn.pack(side='left',padx=8)
+    crop_btn=ttk.Button(actions,text='导出选区 / Export clipped',style='Accent.TButton');crop_btn.pack(side='left',padx=8)
     cancel_btn=ttk.Button(actions,text='取消任务 / Cancel',state='disabled',command=lambda:cancel_task());cancel_btn.pack(side='left')
     result_btn=ttk.Button(actions,text='打开成果目录 / Open result',command=lambda:open_result());result_btn.pack(side='right')
     ttk.Progressbar(main,variable=progress).pack(fill='x',pady=(12,6));ttk.Label(main,textvariable=status,wraplength=1330).pack(anchor='w')
@@ -283,22 +305,27 @@ def gui():
             switch(widget,not blocked)
         switch(open_btn,not blocked and bool(source.get().strip()))
         switch(export_btn,not blocked and bool(source.get().strip()) and (not ready or current))
-        switch(crop_btn,not blocked and current and enabled.get() and clip_valid)
+        switch(crop_btn,not blocked and current and enabled.get() and clip_valid and not polygon_drawing)
         switch(snapshot_btn,not blocked and ready)
         switch(point_entry,ready and point_kind=='points')
         for widget in (*view_buttons,wire_btn):
-            switch(widget,ready)
+            switch(widget,ready and not polygon_drawing)
         switch(cancel_btn,blocked and not closing)
         switch(result_btn,last_result is not None)
         for widget in (alignment_btn,clip_toggle_btn,box_edges_btn,reset_clip_btn,measure_clear,*number_entries,*(slider for _,slider in sliders)):
-            switch(widget,ready and not blocked)
-        switch(fit_clip_btn,ready and not blocked and enabled.get() and clip_valid)
-        switch(undo_clip_btn,ready and not blocked and (not clip_valid or bool(clip_history.history)))
+            switch(widget,ready and not blocked and not polygon_drawing)
+        for action,button in polygon_buttons:
+            switch(button,ready and not blocked and (polygon_drawing if action in ('finish','undo','cancel') else (not polygon_drawing and (bool(polygon) if action=='clear' else True))))
+        if polygon:
+            for i,(axis,slider) in enumerate(sliders):
+                if axis%3!=2:switch(slider,False);switch(number_entries[i],False)
+        switch(fit_clip_btn,ready and not blocked and enabled.get() and clip_valid and not polygon_drawing)
+        switch(undo_clip_btn,ready and not blocked and not polygon_drawing and (not clip_valid or bool(clip_history.history)))
         combo.configure(state='disabled' if blocked else 'readonly')
-        video_panel.set_busy(blocked or not current)
+        video_panel.set_busy(blocked or not current or polygon_drawing)
         flat_panel.set_context(bool(current and loaded_source.suffix.lower()=='.las'),
-                               enabled.get() and clip_valid,blocked)
-        auto_panel.set_context(bool(current and loaded_source.suffix.lower()=='.las'),blocked)
+                               enabled.get() and clip_valid,blocked or polygon_drawing)
+        auto_panel.set_context(bool(current and loaded_source.suffix.lower()=='.las'),blocked or polygon_drawing)
     def busy(active):
         nonlocal task_active
         task_active=active
@@ -319,6 +346,9 @@ def gui():
             shutil.rmtree(ipc,ignore_errors=True);ipc=None
     def start_viewer(path,original,default_target):
         nonlocal viewer,viewer_log,ipc,loaded_source,state_read,bounds,clip_history,clip_valid,pending,point_kind,prepared_view,clip_frame
+        nonlocal polygon,polygon_drawing,polygon_revision
+        polygon=[];polygon_drawing=False;polygon_revision=-1
+        polygon_note.set('可画凹多边形；沿高度方向裁剪。\nDraw a polygon; crop through height.')
         if original!=loaded_source:video_panel.reset()
         if pending is not None:root.after_cancel(pending);pending=None
         stop_viewer();bounds=None;clip_history=None;clip_valid=True;enabled.set(False);clip_note.set('')
@@ -561,6 +591,7 @@ def gui():
     entry.bind('<Return>',lambda _:open_model())
     def poll():
         nonlocal bounds,state_read,closing,clip_history,last_result,clip_frame
+        nonlocal polygon,polygon_drawing,polygon_revision
         try:
             while True:
                 kind,text,pct=events.get_nowait()
@@ -590,7 +621,7 @@ def gui():
                 if kind=='result':last_result,text=text;sync_controls()
                 if kind!='trace':status.set(text);progress.set(pct)
         except queue.Empty:pass
-        if ipc and (not state_read or notebook.select() in (str(measure_tab),str(flat_tab))):
+        if ipc:
             try:
                 state=json.loads((ipc/'state.json').read_text(encoding='utf-8'))
                 if state.get('ready') and not state_read:
@@ -615,6 +646,16 @@ def gui():
                     status.set('模型已打开 / Model ready · '+loaded_source.name);progress.set(100);busy(False)
                 elif 'error' in state and not state_read:
                     state_read=True;status.set('显示失败 / Viewer error: '+state['error']);sync_controls()
+                revision=state.get('polygon_revision',0)
+                if state.get('ready') and revision!=polygon_revision:
+                    polygon_revision=revision;polygon=state.get('polygon',[]);polygon_drawing=state.get('polygon_drawing',False)
+                    count=len(state.get('polygon_draft',[])) if polygon_drawing else len(polygon)
+                    error=state.get('polygon_error','')
+                    if error:polygon_note.set('范围无效，请撤点修改 / Invalid outline\n'+error)
+                    elif polygon_drawing:polygon_note.set(f'已画 {count} 点 / {count} vertices\n左键加点；Enter 完成；右键撤点。\nEsc 取消 / Esc cancels')
+                    elif polygon:polygon_note.set(f'手绘范围已生效 · {count} 点\nPolygon active · {count} vertices\n下方 Z 最小/最大调整高度。\nUse Z min/max to adjust height.')
+                    else:polygon_note.set('可画凹多边形；沿高度方向裁剪。\nDraw a polygon; crop through height.')
+                    flat_panel.invalidate();command();sync_controls()
                 if notebook.select()==str(flat_tab) and state.get('analysis_error'):
                     status.set('色谱显示失败 / Color preview failed · '+state['analysis_error'])
                 if state.get('ready') and notebook.select()==str(measure_tab):

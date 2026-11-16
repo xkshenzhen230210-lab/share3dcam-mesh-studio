@@ -15,6 +15,7 @@
 #include <limits>
 #include "json.hpp"
 #include "horizontal_frame.h"
+#include "polygon_clip.h"
 
 // Independent OpenGL EWA splat implementation. Original PLY parameters stay in
 // the source; only this render cache contains activated scales and covariances.
@@ -30,6 +31,7 @@ struct PointScene {
  osg::ref_ptr<osg::Program> program;
  osg::ref_ptr<osg::DrawElementsUInt> order;
  osg::ref_ptr<osg::Uniform> viewport,clipEnabled,clipMin,clipMax,clipRotation,pointSize;
+ osg::ref_ptr<osg::Uniform> polygonCount,polygonVertices;
  std::vector<float> sh;std::vector<osg::Vec4> baseColors;
  osg::Matrixd previous;bool updated=false;
 
@@ -90,12 +92,22 @@ struct PointScene {
 in vec3 covA;in vec3 covB;
 uniform vec2 viewportSize;uniform bool gaussian;uniform bool clipEnabled;uniform float pointSize;
 uniform vec3 clipMin;uniform vec3 clipMax;uniform vec2 clipRotation;
+uniform int polygonCount;uniform vec2 polygonVertices[128];
+bool polygonInside(vec2 p){
+ bool inside=false;bool boundary=false;
+ for(int i=0;i<polygonCount;i++){
+  vec2 a=polygonVertices[i],b=polygonVertices[(i+1)%polygonCount],d=b-a;
+  float side=d.x*(p.y-a.y)-d.y*(p.x-a.x);
+  boundary=boundary||(abs(side)<=0.000001*length(d)&&all(greaterThanEqual(p,min(a,b)-vec2(0.000001)))&&all(lessThanEqual(p,max(a,b)+vec2(0.000001))));
+  if((a.y>p.y)!=(b.y>p.y)&&p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x)inside=!inside;
+ }return polygonCount==0||inside||boundary;
+}
 out vec3 covariance;out vec4 pointColor;out float skipPoint;
 void main(){
  vec3 local=gl_Vertex.xyz;vec4 eye=gl_ModelViewMatrix*gl_Vertex;
  float c=clipRotation.x,s=clipRotation.y;
  vec3 selected=vec3(c*local.x+s*local.y,-s*local.x+c*local.y,local.z);
- skipPoint=(eye.z>=-0.01 || (clipEnabled && (any(lessThan(selected,clipMin)) || any(greaterThan(selected,clipMax)))))?1.0:0.0;
+ skipPoint=(eye.z>=-0.01 || (clipEnabled && (any(lessThan(selected,clipMin)) || any(greaterThan(selected,clipMax)) || !polygonInside(selected.xy))))?1.0:0.0;
  gl_Position=gl_ProjectionMatrix*eye;pointColor=gl_Color;
  float radius=pointSize*0.5;covariance=vec3(radius*radius,0.0,radius*radius);
  if(gaussian && skipPoint<0.5){
@@ -142,6 +154,8 @@ void main(){
   clipEnabled=new osg::Uniform("clipEnabled",false);clipMin=new osg::Uniform("clipMin",osg::Vec3());clipMax=new osg::Uniform("clipMax",osg::Vec3());
   state->addUniform(clipEnabled);state->addUniform(clipMin);state->addUniform(clipMax);state->addUniform(new osg::Uniform("gaussian",gaussian));
   clipRotation=new osg::Uniform("clipRotation",osg::Vec2(1,0));state->addUniform(clipRotation);
+  polygonCount=new osg::Uniform("polygonCount",0);polygonVertices=new osg::Uniform(osg::Uniform::FLOAT_VEC2,"polygonVertices",128);
+  state->addUniform(polygonCount);state->addUniform(polygonVertices);
   state->setMode(GL_LIGHTING,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE);
   if(gaussian){state->setAttributeAndModes(new osg::BlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA));state->setAttributeAndModes(new osg::Depth(osg::Depth::LESS,0,1,false));state->setMode(GL_BLEND,osg::StateAttribute::ON);}
   auto geode=new osg::Geode;geode->addDrawable(geometry);auto transform=new osg::MatrixTransform;
@@ -165,6 +179,10 @@ void main(){
  }
  void setPointSize(float size){
   if(active&&std::isfinite(size)&&size>=1.f&&size<=12.f)pointSize->set(size);
+ }
+ void setPolygon(const CropPolygon& polygon,const HorizontalFrame& frame){
+  if(!active)return;auto center=frame.local(origin);polygonCount->set(int(polygon.size()));
+  for(unsigned i=0;i<polygon.size();i++)polygonVertices->setElement(i,osg::Vec2(polygon[i].x()-center.x(),polygon[i].y()-center.y()));
  }
  void update(osg::Camera* camera){
   if(!active)return;auto vp=camera->getViewport();viewport->set(osg::Vec2(vp->width(),vp->height()));

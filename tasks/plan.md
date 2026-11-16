@@ -1,4 +1,12 @@
-# Automatic horizontal alignment
+# Polygon selection follow-up
+
+Add an optional simple XY polygon to the existing oriented clipping descriptor. Use inclusive center filtering for original point records; triangulate concave outlines and clip mesh faces with source-space attribute interpolation. Keep old boxes compatible.
+
+Provide native top-view click drawing with draft/committed separation, undo, cancel and closure validation. The GUI exposes Draw/Finish/Undo/Cancel/Clear, polls native revisions, disables conflicting navigation and exports while drawing, and applies polygon bounds to existing export, selected-wall and video paths. Use a single fragment-discard pass for native meshes and center filtering for points, preserving textures and original coordinates.
+
+Verify concavity, invalid inputs, internal diagonal face ownership, point bytes, Gaussian properties, native pixels, actual LAS and OSGB exports/videos, packaged UI and archive integrity.
+
+## Previous automatic horizontal alignment
 
 Default to a horizontal working frame whose X axis follows the long side of the footprint's minimum-area rectangle. Preserve source coordinates and records. Align the clipping volume and standard views to this frame, so the scene appears straight without rewriting geometry. An Auto align checkbox restores original axes by reopening the prepared preview; it resets the clipping selection but keeps world-coordinate camera keys compatible.
 

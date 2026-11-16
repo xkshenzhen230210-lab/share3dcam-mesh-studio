@@ -41,6 +41,9 @@ static std::function<void(MouseMotion,double,double)> mouseDrag;
 static std::function<void()> mouseEnd;
 static std::function<void()> measureClick;
 static std::function<void(POINT,double)> mouseWheel;
+static std::function<void(POINT)> polygonClick;
+static std::function<void(const std::string&)> polygonAction;
+static bool polygonDrawing=false;
 static UINT dragButton=0;static POINT dragPoint{};static MouseMotion dragMotion=MouseMotion::Orbit;
 static bool measureMode=false,dragMoved=false;
 void stopMouseDrag(HWND window){
@@ -59,6 +62,12 @@ void updateMouseDrag(LPARAM detail){
  }
 }
 LRESULT CALLBACK navigationWindowProcedure(HWND window,UINT message,WPARAM key,LPARAM detail){
+ if(polygonDrawing){
+  if(message==WM_LBUTTONDOWN){SetFocus(window);if(polygonClick)polygonClick({GET_X_LPARAM(detail),GET_Y_LPARAM(detail)});return 0;}
+  if(message==WM_RBUTTONDOWN){if(polygonAction)polygonAction("undo");return 0;}
+  if(message==WM_LBUTTONUP||message==WM_LBUTTONDBLCLK||message==WM_RBUTTONUP)return 0;
+  if(message==WM_KEYDOWN&&(key==VK_RETURN||key==VK_ESCAPE||key==VK_BACK)){if(polygonAction)polygonAction(key==VK_RETURN?"finish":key==VK_ESCAPE?"cancel":"undo");return 0;}
+ }
  if(message==WM_LBUTTONDOWN||message==WM_RBUTTONDOWN||message==WM_MBUTTONDOWN||message==WM_LBUTTONDBLCLK||message==WM_RBUTTONDBLCLK||message==WM_MBUTTONDBLCLK){
   if(dragButton)return 0;
   SetFocus(window);dragPoint={GET_X_LPARAM(detail),GET_Y_LPARAM(detail)};
@@ -145,7 +154,7 @@ void fitClipBox(MouseCamera& camera,const osg::BoundingBoxd& box,double aspect,c
 
 std::optional<osg::Vec3d> pickSurface(osg::Node& model,const PointScene& points,
                                      const MouseCamera& camera,double x,double y,double height,
-                                     const osg::BoundingBoxd& clipBounds,const HorizontalFrame& frame=HorizontalFrame()){
+                                     const osg::BoundingBoxd& clipBounds,const HorizontalFrame& frame=HorizontalFrame(),const CropPolygon& polygon=CropPolygon()){
  auto forward=camera.center-camera.eye;
  if(forward.normalize()<1e-10)return {};
  auto right=forward^camera.up;
@@ -169,7 +178,7 @@ std::optional<osg::Vec3d> pickSurface(osg::Node& model,const PointScene& points,
    double radius=depth*tolerance;
    if(dx*dx+dy*dy>radius*radius)continue;
    auto world=local+points.origin;
-   if(clipBounds.valid()&&!clipBounds.contains(frame.local(world)))continue;
+   if(clipBounds.valid()&&(!clipBounds.contains(frame.local(world))||!polygonContains(osg::Vec2d(frame.local(world).x(),frame.local(world).y()),polygon)))continue;
    nearest=depth;
    hit=world;
   }
@@ -190,11 +199,12 @@ std::optional<osg::Vec3d> pickSurface(osg::Node& model,const PointScene& points,
   if(start>=end)return {};
  }
  osg::ref_ptr<osgUtil::LineSegmentIntersector> rayPick=new osgUtil::LineSegmentIntersector(camera.eye+ray*start,camera.eye+ray*end);
- rayPick->setIntersectionLimit(osgUtil::Intersector::LIMIT_NEAREST);
+ rayPick->setIntersectionLimit(polygon.empty()?osgUtil::Intersector::LIMIT_NEAREST:osgUtil::Intersector::NO_LIMIT);
  osgUtil::IntersectionVisitor visitor(rayPick);
  model.accept(visitor);
  if(!rayPick->containsIntersections())return {};
- return rayPick->getFirstIntersection().getWorldIntersectPoint();
+ for(auto& hit:rayPick->getIntersections()){auto p=hit.getWorldIntersectPoint(),local=frame.local(p);if(polygonContains({local.x(),local.y()},polygon))return p;}
+ return {};
 }
 struct CoarseBounds:osg::ComputeBoundsVisitor {
  fs::path folder;unsigned depth=0;
@@ -219,6 +229,7 @@ struct DisplayMaterials:osg::NodeVisitor {
    if(g->getUserValue("share_display",done)&&done)continue;
    auto state=g->getOrCreateStateSet();bool textured=state->getTextureAttribute(0,osg::StateAttribute::TEXTURE)!=nullptr;
    for(auto n:getNodePath())if(n->getStateSet()&&n->getStateSet()->getTextureAttribute(0,osg::StateAttribute::TEXTURE))textured=true;
+   state->addUniform(new osg::Uniform("polygonTextured",textured));
    state->setMode(GL_LIGHTING,(textured?osg::StateAttribute::OFF:osg::StateAttribute::ON)|osg::StateAttribute::OVERRIDE);
    if(!textured){if(!g->getNormalArray())osgUtil::SmoothingVisitor::smooth(*g);auto mat=new osg::Material;mat->setColorMode(osg::Material::AMBIENT_AND_DIFFUSE);mat->setAmbient(osg::Material::FRONT_AND_BACK,osg::Vec4(.3,.3,.3,1));state->setAttributeAndModes(mat,osg::StateAttribute::ON);}
    g->setUserValue("share_display",true);
@@ -232,6 +243,9 @@ void writeState(const json& value,const wchar_t* destination=L"state.json"){
 }
 void state(const json& value){writeState(value);}
 int main(int argc,char**argv){try{
+ if(argc==3&&std::string(argv[1])=="--test-polygon"){
+  std::ifstream input(fs::u8path(argv[2]));json value;input>>value;auto p=readPolygon(value);auto triangles=polygonTriangles(p);json out=json::array();for(auto t:triangles)out.push_back({{t[0].x(),t[0].y()},{t[1].x(),t[1].y()},{t[2].x(),t[2].y()}});std::cout<<out.dump();return 0;
+ }
  if(argc==3&&std::string(argv[1])=="--test-alignment"){
   std::ifstream input(fs::u8path(argv[2]));json points;input>>points;std::vector<osg::Vec2d> footprint;osg::BoundingBoxd source;
   for(auto& p:points){osg::Vec3d v(p[0],p[1],p[2]);source.expandBy(v);footprint.push_back({v.x(),v.y()});}
@@ -310,7 +324,7 @@ int main(int argc,char**argv){try{
  auto traits=new osg::GraphicsContext::Traits;traits->x=0;traits->y=0;traits->width=w;traits->height=h;traits->windowDecoration=false;traits->doubleBuffer=true;traits->inheritedWindowData=new osgViewer::GraphicsWindowWin32::WindowData(child);
  auto gc=osg::GraphicsContext::createGraphicsContext(traits);if(!gc)throw std::runtime_error("OpenGL context failed");
  osgViewer::Viewer viewer;viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);viewer.getCamera()->setGraphicsContext(gc);viewer.getCamera()->setViewport(0,0,w,h);viewer.getCamera()->setProjectionMatrixAsPerspective(35.,double(w)/h,.01,100000.);viewer.getCamera()->setClearColor(osg::Vec4(.055,.08,.12,1));
- auto scene=new osg::Group;auto clip=new osg::ClipNode;clip->addChild(model);scene->addChild(clip);
+ auto scene=new osg::Group;auto clip=new osg::ClipNode;clip->addChild(model);MeshPolygonClip meshPolygon(*clip);scene->addChild(clip);
  auto box=new osg::Geode;auto geom=new osg::Geometry;auto vertices=new osg::Vec3dArray(24);geom->setVertexArray(vertices);geom->addPrimitiveSet(new osg::DrawArrays(GL_LINES,0,24));auto colors=new osg::Vec4Array;colors->push_back(osg::Vec4(1,.52,.18,1));geom->setColorArray(colors,osg::Array::BIND_OVERALL);box->addDrawable(geom);box->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);box->getOrCreateStateSet()->setAttribute(new osg::LineWidth(2));scene->addChild(box);box->setNodeMask(0);
  auto marker=new osg::MatrixTransform;
  auto markerNode=new osg::Geode;
@@ -387,6 +401,28 @@ int main(int argc,char**argv){try{
  auto home=sphere.center();double distance=std::max(1.f,sphere.radius());manip->setHomePosition(home+frame.direction(osg::Vec3d(distance*1.2,-distance*1.8,distance*1.3)),home,osg::Vec3d(0,0,1));viewer.home();
  long long last=-1;int frames=0;double fovy=35.,fixedAspect=0.,navigationSpeed=1.5,mouseSensitivity=1.;unsigned mouseSteps=0;
  osg::BoundingBoxd clipBounds;
+ CropPolygon polygon,draftPolygon;std::string polygonError;unsigned polygonRevision=0;
+ auto polygonNode=new osg::Geode;auto polygonGeometry=new osg::Geometry;auto polygonLines=new osg::Vec3dArray;
+ polygonGeometry->setVertexArray(polygonLines);polygonGeometry->setColorArray(colors,osg::Array::BIND_OVERALL);polygonNode->addDrawable(polygonGeometry);
+ polygonNode->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);polygonNode->getOrCreateStateSet()->setMode(GL_DEPTH_TEST,osg::StateAttribute::OFF);polygonNode->getOrCreateStateSet()->setAttribute(new osg::LineWidth(3));scene->addChild(polygonNode);
+ bool polygonShow=true,wasPolygonDrawing=false;double polygonSpan=1;
+ auto refreshPolygon=[&](){
+  polygonLines->clear();auto& p=polygonDrawing?draftPolygon:polygon;
+  double z=clipBounds.valid()?clipBounds.zMax():selectedBounds.zMax();
+  if(p.size()>1)for(size_t i=0;i<(polygonDrawing?p.size()-1:p.size());i++)for(auto v:{p[i],p[(i+1)%p.size()]})polygonLines->push_back(frame.world({v.x(),v.y(),z}));
+  if(p.size()==1)polygonLines->push_back(frame.world({p[0].x(),p[0].y(),z}));
+  polygonGeometry->removePrimitiveSet(0,polygonGeometry->getNumPrimitiveSets());polygonGeometry->addPrimitiveSet(new osg::DrawArrays(GL_LINES,0,polygonLines->size()));polygonGeometry->addPrimitiveSet(new osg::DrawArrays(GL_POINTS,0,polygonLines->size()));polygonNode->getOrCreateStateSet()->setAttribute(new osg::Point(6));polygonLines->dirty();polygonGeometry->dirtyBound();polygonGeometry->dirtyDisplayList();
+  polygonNode->setNodeMask((polygonDrawing||polygonShow)&&!p.empty()?~0u:0u);
+ };
+ polygonAction=[&](const std::string& action){
+  polygonError.clear();
+  if(action=="start"){polygonDrawing=true;draftPolygon.clear();auto vp=viewer.getCamera()->getViewport();polygonSpan=std::max(selectedBounds.yMax()-selectedBounds.yMin(),(selectedBounds.xMax()-selectedBounds.xMin())*vp->height()/vp->width())*1.12;}
+  else if(action=="undo"&&polygonDrawing&&!draftPolygon.empty())draftPolygon.pop_back();
+  else if(action=="clear"){polygon.clear();draftPolygon.clear();polygonDrawing=false;}
+  else if(action=="cancel"){draftPolygon.clear();polygonDrawing=false;}
+  else if(action=="finish"&&polygonDrawing){try{polygonTriangles(draftPolygon);polygon=draftPolygon;polygonDrawing=false;}catch(const std::exception& e){polygonError=e.what();}}
+  polygonRevision++;refreshPolygon();
+ };
  std::optional<osg::Vec3d> lastPickedPoint;
  std::optional<osg::Vec3d> measureHit;
  std::array<osg::Vec3d,2> measurePoints;
@@ -416,10 +452,21 @@ int main(int argc,char**argv){try{
   auto vp=viewer.getCamera()->getViewport();
   double x=cursor.x+.5-vp->x()-vp->width()*.5;
   double y=cursor.y+.5-(h-vp->y()-vp->height()*.5);
-  return analysisVisible?pickSurface(*analysis->node,*analysis,p,x,y,vp->height(),clipBounds,frame):
-   pickSurface(*model,points,p,x,y,vp->height(),clipBounds,frame);
+  return analysisVisible?pickSurface(*analysis->node,*analysis,p,x,y,vp->height(),clipBounds,frame,clipBounds.valid()?polygon:CropPolygon()):
+   pickSurface(*model,points,p,x,y,vp->height(),clipBounds,frame,clipBounds.valid()?polygon:CropPolygon());
+ };
+ polygonClick=[&](POINT cursor){
+  if(!insideViewport(cursor)||draftPolygon.size()>=128)return;auto p=pose();auto vp=viewer.getCamera()->getViewport();
+  auto forward=p.center-p.eye;forward.normalize();auto right=forward^p.up;right.normalize();auto up=right^forward;
+  double pixel=polygonSpan/vp->height();
+  double x=cursor.x+.5-vp->x()-vp->width()*.5,y=cursor.y+.5-(h-vp->y()-vp->height()*.5);
+  auto v=frame.local(p.center+right*(x*pixel)-up*(y*pixel));osg::Vec2d xy(v.x(),v.y());
+  if(draftPolygon.size()>=3&&(xy-draftPolygon.front()).length()<pixel*8){polygonAction("finish");return;}
+  if(draftPolygon.empty()||(xy-draftPolygon.back()).length2()>1e-16)draftPolygon.push_back(xy);
+  polygonError.clear();polygonRevision++;refreshPolygon();
  };
  mouseStart=[&](MouseMotion motion,POINT cursor,bool centerOnPoint){
+  if(polygonDrawing)return false;
   if(!insideViewport(cursor))return false;
   if(motion==MouseMotion::Look)return true;
   auto p=pose();
@@ -462,12 +509,14 @@ int main(int argc,char**argv){try{
  };
  mouseWheel=[&](POINT cursor,double steps){
   if(!insideViewport(cursor))return;
+  if(polygonDrawing){polygonSpan=std::clamp(polygonSpan*std::pow(.85,steps),1e-6,1e9);return;}
   auto p=pose();
   auto hit=pick(p,cursor);
   zoomMouseCamera(p,steps,hit?&*hit:nullptr);
   manip->applyPose(p.eye,p.center,p.up);mouseSteps++;
  };
  navigationPress=[&](unsigned key){
+  if(polygonDrawing)return true;
   if(key==VK_ESCAPE&&measureMode){
    measureCount=0;measureMiss=false;refreshRuler();
    return true;
@@ -480,7 +529,9 @@ int main(int argc,char**argv){try{
   auto delta=navigationDelta(center-eye,up,right,forward,vertical,navigationSpeed*multiplier,1./60.);
   manip->applyPose(eye+delta,center+delta,up);lastEventKey=key;navigationSteps++;return true;
  };
- auto projection=[&](){int vw=w,vh=h;if(fixedAspect>0){if(double(w)/h>fixedAspect)vw=std::max(1,int(h*fixedAspect));else vh=std::max(1,int(w/fixedAspect));}viewer.getCamera()->setViewport((w-vw)/2,(h-vh)/2,vw,vh);viewer.getCamera()->setProjectionMatrixAsPerspective(fovy,fixedAspect>0?fixedAspect:double(w)/h,.01,100000.);};
+ auto projection=[&](){int vw=w,vh=h;if(fixedAspect>0){if(double(w)/h>fixedAspect)vw=std::max(1,int(h*fixedAspect));else vh=std::max(1,int(w/fixedAspect));}viewer.getCamera()->setViewport((w-vw)/2,(h-vh)/2,vw,vh);double aspect=fixedAspect>0?fixedAspect:double(w)/h;
+  if(polygonDrawing)viewer.getCamera()->setProjectionMatrixAsOrtho(-polygonSpan*aspect*.5,polygonSpan*aspect*.5,-polygonSpan*.5,polygonSpan*.5,-100000.,100000.);
+  else viewer.getCamera()->setProjectionMatrixAsPerspective(fovy,aspect,.01,100000.);};
  auto publish=[&](){
   auto p=pose();
   auto vec=[](const osg::Vec3d& v){return json::array({v.x(),v.y(),v.z()});};
@@ -490,16 +541,21 @@ int main(int argc,char**argv){try{
    measurement["distance"]=delta.length();
    measurement["delta"]=vec(delta);
   }
-  state({{"ready",true},{"bounds",lohi},{"clip_frame",frame.json()},{"applied_seq",last},{"analysis_visible",analysisVisible},{"analysis_source",analysisSource},{"analysis_error",analysisError},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
+  state({{"ready",true},{"bounds",lohi},{"clip_frame",frame.json()},{"polygon",polygonJson(polygon)},{"polygon_draft",polygonJson(draftPolygon)},{"polygon_drawing",polygonDrawing},{"polygon_error",polygonError},{"polygon_revision",polygonRevision},{"applied_seq",last},{"analysis_visible",analysisVisible},{"analysis_source",analysisSource},{"analysis_error",analysisError},{"navigation_focused",GetFocus()==child},{"navigation_foreground",GetForegroundWindow()==GetAncestor(parent,GA_ROOT)},{"navigation_input",{lastNativeKey,lastNativeChar,lastEventKey,navigationSteps}},{"mouse_steps",mouseSteps},{"mouse_sensitivity",mouseSensitivity},{"measurement",measurement},{"camera",{{"eye",vec(p.eye)},{"center",vec(p.center)},{"up",vec(p.up)},{"fovy",fovy}}}});
  };
  auto lastState=std::chrono::steady_clock::now(),lastMove=lastState;publish();
  while(!viewer.done()&&IsWindow(parent)){
   GetClientRect(parent,&r);if(r.right!=w||r.bottom!=h){w=std::max(10L,r.right);h=std::max(10L,r.bottom);SetWindowPos(child,nullptr,0,0,w,h,SWP_NOZORDER);gc->resized(0,0,w,h);projection();}
   if(frames++%3==0){try{std::ifstream f("command.json");json command;if(f){f>>command;long long seq=command.value("seq",0LL);if(seq!=last){last=seq;if(command.value("quit",false))break;
     if(command.contains("aspect")){double next=command.at("aspect");if(std::isfinite(next)&&next>=0&&next<=10){fixedAspect=next;projection();}}
-    bool enabled=command.value("enabled",false);auto b=command.value("box",std::vector<double>{-1,-1,-1,1,1,1});
+    if(command.contains("polygon_action"))polygonAction(command.at("polygon_action").get<std::string>());
+    bool enabled=command.value("enabled",false)&&!polygonDrawing;auto b=command.value("box",std::vector<double>{-1,-1,-1,1,1,1});
     if(b.size()!=6||!std::all_of(b.begin(),b.end(),[](double v){return std::isfinite(v);})||
        b[0]>=b[3]||b[1]>=b[4]||b[2]>=b[5])throw std::runtime_error("Invalid clip bounds");
+    if(!polygon.empty()){
+     b[0]=b[1]=1e300;b[3]=b[4]=-1e300;
+     for(auto p:polygon){b[0]=std::min(b[0],p.x());b[1]=std::min(b[1],p.y());b[3]=std::max(b[3],p.x());b[4]=std::max(b[4],p.y());}
+    }
     auto previousClip=clipBounds;
     clipBounds.init();if(enabled)clipBounds.set(b[0],b[1],b[2],b[3],b[4],b[5]);
     bool nextMeasure=command.value("measure",false);
@@ -508,9 +564,8 @@ int main(int argc,char**argv){try{
      measureMode=nextMeasure;measureReset=reset;measureCount=0;measureMiss=false;measureHit.reset();
      refreshRuler();
     }
-    while(clip->getNumClipPlanes())clip->removeClipPlane(clip->getClipPlane(0));
-    if(enabled&&!points.active)for(unsigned i=0;i<6;i++)clip->addClipPlane(new osg::ClipPlane(i,frame.plane(i,b)));
-    points.setClip(enabled,b,frame);
+    if(!points.active){setMeshClip(*clip,enabled,b,frame);meshPolygon.set(polygon,frame,enabled);}
+    points.setClip(enabled,b,frame);points.setPolygon(polygon,frame);
     auto nextAnalysis=command.value("analysis_source",std::string());
     if(nextAnalysis.empty())analysisError.clear();
     if(nextAnalysis!=analysisSource){
@@ -530,7 +585,7 @@ int main(int argc,char**argv){try{
     if(nextVisible!=analysisVisible){lastPickedPoint.reset();measureCount=0;measureHit.reset();refreshRuler();}
     analysisVisible=nextVisible;
     model->setNodeMask(analysisVisible?0u:~0u);
-    if(analysis){analysis->node->setNodeMask(analysisVisible?~0u:0u);analysis->setClip(enabled,b,frame);}
+    if(analysis){analysis->node->setNodeMask(analysisVisible?~0u:0u);analysis->setClip(enabled,b,frame);analysis->setPolygon(polygon,frame);}
     float pointSize=command.value("point_size",2.f);
     points.setPointSize(pointSize);if(analysis)analysis->setPointSize(pointSize);
     double speed=command.value("navigation_speed",navigationSpeed);if(std::isfinite(speed)&&speed>0&&speed<=100000)navigationSpeed=speed;
@@ -542,7 +597,8 @@ int main(int argc,char**argv){try{
       manip->applyPose(eye+delta,center+delta,up);
      }
     }
-    box->setNodeMask(command.value("showBox",false)?~0u:0u);unsigned at=0;for(int axis=0;axis<3;axis++)for(int j=0;j<4;j++){osg::Vec3d a,c;for(int k=0;k<3;k++)a[k]=c[k]=b[k];int a1=(axis+1)%3,a2=(axis+2)%3;a[a1]=c[a1]=b[a1+((j&1)?3:0)];a[a2]=c[a2]=b[a2+((j&2)?3:0)];c[axis]=b[axis+3];(*vertices)[at++]=frame.world(a);(*vertices)[at++]=frame.world(c);}vertices->dirty();geom->dirtyBound();geom->dirtyDisplayList();
+    polygonShow=command.value("showBox",false);refreshPolygon();
+    box->setNodeMask(polygon.empty()&&!polygonDrawing&&polygonShow?~0u:0u);unsigned at=0;for(int axis=0;axis<3;axis++)for(int j=0;j<4;j++){osg::Vec3d a,c;for(int k=0;k<3;k++)a[k]=c[k]=b[k];int a1=(axis+1)%3,a2=(axis+2)%3;a[a1]=c[a1]=b[a1+((j&1)?3:0)];a[a2]=c[a2]=b[a2+((j&2)?3:0)];c[axis]=b[axis+3];(*vertices)[at++]=frame.world(a);(*vertices)[at++]=frame.world(c);}vertices->dirty();geom->dirtyBound();geom->dirtyDisplayList();
     scene->getOrCreateStateSet()->setAttributeAndModes(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK,command.value("wire",false)?osg::PolygonMode::LINE:osg::PolygonMode::FILL));
     std::string view=command.value("view",std::string());
     if(!view.empty())lastPickedPoint.reset();
@@ -560,6 +616,7 @@ int main(int argc,char**argv){try{
      auto c=sphere.center();double d=std::max(1.f,sphere.radius())*3.5;osg::Vec3d eye=c,up(0,0,1);
      if(view=="top"){eye.z()+=d;up.set(0,1,0);}else if(view=="front")eye.y()-=d;else eye.x()+=d;
      manip->applyPose(c+frame.direction(eye-c),c,frame.direction(up));
+     if(view=="top"&&polygonDrawing){auto p=pose();auto vp=viewer.getCamera()->getViewport();fitClipBox(p,selectedBounds,vp->width()/vp->height(),frame);manip->applyPose(p.eye,p.center,p.up);}
     }
     if(command.contains("camera")){
      auto& camera=command.at("camera");auto vec=[&](const char* key){auto a=camera.at(key).get<std::vector<double>>();if(a.size()!=3||!std::all_of(a.begin(),a.end(),[](double v){return std::isfinite(v);}))throw std::runtime_error("Invalid camera vector");return osg::Vec3d(a[0],a[1],a[2]);};
@@ -581,16 +638,17 @@ int main(int argc,char**argv){try{
   }
   auto now=std::chrono::steady_clock::now();double dt=std::chrono::duration<double>(now-lastMove).count();lastMove=now;
   // Focus stays with text fields until the user clicks inside the viewport.
-  if(GetFocus()==child&&GetForegroundWindow()==GetAncestor(parent,GA_ROOT)){
+  if(!polygonDrawing&&GetFocus()==child&&GetForegroundWindow()==GetAncestor(parent,GA_ROOT)){
    auto held=[](int key){return (GetAsyncKeyState(key)&0x8000)?1.:0.;};
    osg::Vec3d eye,center,up;manip->getTransformation(eye,center,up);
    double speed=navigationSpeed*(held(VK_SHIFT)?3.:1.)*(held(VK_CONTROL)?.2:1.);
    auto delta=navigationDelta(center-eye,up,held('D')-held('A'),held('W')-held('S'),held('Q')-held('E'),speed,dt);
    if(delta.length2()>0)manip->applyPose(eye+delta,center+delta,up);
   }
+  if(polygonDrawing||wasPolygonDrawing){projection();wasPolygonDrawing=polygonDrawing;}
   viewer.advance();viewer.eventTraversal();viewer.updateTraversal();points.update(viewer.getCamera());
   if(analysisVisible)analysis->update(viewer.getCamera());
-  viewer.renderingTraversals();
+  meshPolygon.update(viewer.getCamera());viewer.renderingTraversals();
   if(snapshot->image){
    bool saved=osgDB::writeImageFile(*snapshot->image,"snapshot.png");
    snapshot->image=nullptr;

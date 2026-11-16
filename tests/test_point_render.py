@@ -62,6 +62,12 @@ class PointRenderTests(unittest.TestCase):
         self.assertGreater(int(image[:,:,2].max()),100)
         self.assertLess(int(image[:,:,0].max()),30)
 
+    def test_concave_polygon_removes_notch_point(self):
+        selection=dict(bounds=[-1,-1,-1,1,1,1],polygon=[[-.2,-.2],[.2,-.2],[.2,.2],[-.1,.2],[-.1,.8],[-.2,.8]])
+        image=self.render([self.record([1,0,0]),self.record([0,0,1],.5)],selection)
+        self.assertGreater(int(image[:,:,0].max()),100)
+        self.assertLess(int(image[:,:,2].max()),40)
+
     def test_navigation_camera_basis(self):
         result=subprocess.run([str(RUNTIME/'mesh_viewer.exe'),'--test-navigation'],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
