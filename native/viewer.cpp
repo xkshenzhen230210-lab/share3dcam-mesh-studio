@@ -452,8 +452,13 @@ int main(int argc,char**argv){try{
   auto vp=viewer.getCamera()->getViewport();
   double x=cursor.x+.5-vp->x()-vp->width()*.5;
   double y=cursor.y+.5-(h-vp->y()-vp->height()*.5);
-  return analysisVisible?pickSurface(*analysis->node,*analysis,p,x,y,vp->height(),clipBounds,frame,clipBounds.valid()?polygon:CropPolygon()):
-   pickSurface(*model,points,p,x,y,vp->height(),clipBounds,frame,clipBounds.valid()?polygon:CropPolygon());
+  auto pickPose=p;
+  if(polygonOrtho){
+   auto forward=p.center-p.eye;forward.normalize();auto right=forward^p.up;right.normalize();auto up=right^forward;
+   auto shift=(right*x-up*y)*(polygonSpan/vp->height());pickPose.eye+=shift;pickPose.center+=shift;x=y=0;
+  }
+  return analysisVisible?pickSurface(*analysis->node,*analysis,pickPose,x,y,vp->height(),clipBounds,frame,clipBounds.valid()?polygon:CropPolygon()):
+   pickSurface(*model,points,pickPose,x,y,vp->height(),clipBounds,frame,clipBounds.valid()?polygon:CropPolygon());
  };
  polygonClick=[&](POINT cursor){
   if(!insideViewport(cursor)||draftPolygon.size()>=128)return;auto p=pose();auto vp=viewer.getCamera()->getViewport();
@@ -468,7 +473,6 @@ int main(int argc,char**argv){try{
  mouseStart=[&](MouseMotion motion,POINT cursor,bool centerOnPoint){
   if(polygonDrawing)return false;
   if(!insideViewport(cursor))return false;
-  polygonOrtho=false;
   if(motion==MouseMotion::Look)return true;
   auto p=pose();
   auto hit=pick(p,cursor);
@@ -492,7 +496,7 @@ int main(int argc,char**argv){try{
   return true;
  };
  mouseDrag=[&](MouseMotion motion,double dx,double dy){
-  auto p=pose();
+  polygonOrtho=false;auto p=pose();
   auto vp=viewer.getCamera()->getViewport();
   if(motion==MouseMotion::Orbit)orbitMouseCamera(p,dragPivot,dx,dy,vp->width(),vp->height(),mouseSensitivity);
   else if(motion==MouseMotion::Pan)panMouseCamera(p,dx,dy,vp->height(),mouseSensitivity,panDepth);
