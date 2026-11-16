@@ -1,4 +1,8 @@
-# Full Gaussian preview repair
+# Resource optimization
+
+Follow [resource-optimization.md](resource-optimization.md) to measure and reduce repeated work while preserving complete Gaussian contributors, SH lighting, original textures and video quality. Guard on-demand refresh, block reading, independent sort/color invalidation and compact active SH storage with actual native protocol/pixel tests. Compare against the 1.10.1 executable, then package and inspect 1.10.2.
+
+## Previous full Gaussian preview repair
 
 Reproduce the reported sparse bridge rendering from its original 13,026,917-Gaussian PLY. Preserve the sampled output as evidence, then remove Gaussian thinning while keeping ordinary point sampling. Compact SH0 display cache records without changing source/export records. Preserve exact depth sorting while replacing its scaling cost, retain visible offscreen tails, and correct orthographic splat projection.
 

@@ -1,4 +1,13 @@
-# Gaussian display repair acceptance
+# Resource optimization acceptance
+
+- [x] Measure full bridge reference rendering and stationary viewer costs.
+- [x] Stop redundant draws; verify input, paging, clipping, resize and snapshot wake-up.
+- [x] Bound cache reads; reuse exact sort/SH work; store only active SH coefficients.
+- [x] Compare all bridge frame bytes and SH0–SH3 pixels without differences; run 208 regressions.
+- [x] Finish 4K60 actual source video and controlled final resource measurements.
+- [x] Package, inspect and verify the 1.10.2 distribution archive.
+
+## Previous Gaussian display repair acceptance
 
 - [x] Reproduce the original bridge file and identify the stride-44 Gaussian preview loss.
 - [x] Keep every Gaussian without opacity/size compensation; ordinary point sampling unchanged.

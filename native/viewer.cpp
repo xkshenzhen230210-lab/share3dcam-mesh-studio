@@ -64,6 +64,8 @@ void updateMouseDrag(LPARAM detail){
 }
 LRESULT CALLBACK navigationWindowProcedure(HWND window,UINT message,WPARAM key,LPARAM detail){
  if(message==WM_PAINT||message==WM_SIZE||message==WM_SHOWWINDOW||message==WM_DISPLAYCHANGE||
+    message==WM_LBUTTONDOWN||message==WM_RBUTTONDOWN||message==WM_MBUTTONDOWN||
+    message==WM_LBUTTONDBLCLK||message==WM_RBUTTONDBLCLK||message==WM_MBUTTONDBLCLK||
     message==WM_LBUTTONUP||message==WM_RBUTTONUP||message==WM_MBUTTONUP)viewDirty=true;
  if(polygonDrawing){
   if(message==WM_LBUTTONDOWN){SetFocus(window);if(polygonClick)polygonClick({GET_X_LPARAM(detail),GET_Y_LPARAM(detail)});return 0;}

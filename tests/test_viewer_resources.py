@@ -72,6 +72,9 @@ class ViewerResourceTests(unittest.TestCase):
                 self.assertNotEqual(first,(folder/'snapshot.png').read_bytes())
                 c=settle();root.geometry('400x280+40+40');root.update()
                 until(lambda s:s.get('rendered_frames',0)>c['rendered_frames']);settle()
+                root.withdraw();root.update();hidden=settle()
+                root.deiconify();root.update()
+                until(lambda s:s.get('rendered_frames',0)>hidden['rendered_frames']);settle()
             finally:
                 write_json(folder/'command.json',dict(seq=99,quit=True));
                 try:p.wait(timeout=5)
