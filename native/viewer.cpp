@@ -46,7 +46,7 @@ static std::function<void(const std::string&)> polygonAction;
 static bool polygonDrawing=false;
 static UINT dragButton=0;static POINT dragPoint{};static MouseMotion dragMotion=MouseMotion::Orbit;
 static bool measureMode=false,dragMoved=false;
-static bool viewDirty=true;static uint64_t renderedFrames=0;
+static bool viewDirty=true;static uint64_t renderedFrames=0,loadedMeshDrawables=0;
 void stopMouseDrag(HWND window){
  if(dragButton&&mouseEnd)mouseEnd();
  dragButton=0;
@@ -225,10 +225,12 @@ struct CoarseBounds:osg::ComputeBoundsVisitor {
  }
 };
 struct DisplayMaterials:osg::NodeVisitor {
+ size_t drawables=0;
  DisplayMaterials():NodeVisitor(TRAVERSE_ALL_CHILDREN){}
  void apply(osg::Geode& node)override {
   for(unsigned i=0;i<node.getNumDrawables();i++)if(auto g=node.getDrawable(i)->asGeometry()){
    bool point=false;if(g->getUserValue("share_point",point)&&point)continue;
+   drawables++;
    if(g->getUserValue("share_display",done)&&done)continue;
    auto state=g->getOrCreateStateSet();bool textured=state->getTextureAttribute(0,osg::StateAttribute::TEXTURE)!=nullptr;
    for(auto n:getNodePath())if(n->getStateSet()&&n->getStateSet()->getTextureAttribute(0,osg::StateAttribute::TEXTURE))textured=true;
@@ -244,7 +246,7 @@ void writeState(const json& value,const wchar_t* destination=L"state.json"){
  std::ofstream f("state.tmp");f<<value.dump();f.close();
  MoveFileExW(L"state.tmp",destination,MOVEFILE_REPLACE_EXISTING);
 }
-void state(json value){if(value.contains("ready"))value["rendered_frames"]=renderedFrames;writeState(value);}
+void state(json value){if(value.contains("ready")){value["rendered_frames"]=renderedFrames;value["loaded_mesh_drawables"]=loadedMeshDrawables;}writeState(value);}
 int main(int argc,char**argv){try{
  if(argc==3&&(std::string(argv[1])=="--test-depth-sort"||std::string(argv[1])=="--benchmark-depth-sort")){
   osg::ref_ptr<osg::Vec3Array> positions=new osg::Vec3Array;osg::Vec3d direction(0,1,0);PointScene data;
@@ -671,13 +673,15 @@ int main(int argc,char**argv){try{
   if(polygonOrtho||wasPolygonDrawing){projection();wasPolygonDrawing=polygonOrtho;}
   // Pump input even while stationary. OSG's demand checks include page arrivals,
   // update callbacks and incremental GL compilation, so detail keeps loading.
-  bool needsFrame=viewer.checkNeedToDoFrame(),sceneUpdate=viewer.requiresUpdateSceneGraph();
+  bool needsFrame=viewer.checkNeedToDoFrame();
   viewer.advance();viewer.eventTraversal();
   auto camera=viewer.getCamera();auto nextView=manip->getInverseMatrix();
   bool changed=viewDirty||snapshot->requested||!renderedFrames||nextView!=renderedView||camera->getProjectionMatrix()!=renderedProjection;
   if((needsFrame||changed)&&IsWindowVisible(child)&&!IsIconic(GetAncestor(parent,GA_ROOT))){
    viewDirty=false;viewer.updateTraversal();
-   if(!renderedFrames||sceneUpdate){DisplayMaterials materials;model->accept(materials);}
+   // Pages can arrive between the demand check and update traversal. Apply the
+   // inexpensive per-geometry "already prepared" check after each actual draw update.
+   DisplayMaterials materials;model->accept(materials);loadedMeshDrawables=materials.drawables;
    if(!analysisVisible)points.update(camera);
    if(analysisVisible)analysis->update(camera);
    meshPolygon.update(camera);viewer.renderingTraversals();renderedFrames++;

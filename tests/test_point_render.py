@@ -51,6 +51,10 @@ class PointRenderTests(unittest.TestCase):
         record=self.record([1,0,0]);record[7:10]=[1e20]*3
         self.assertIn('covariance',self.render([record],failure=True))
 
+    def test_cache_validation_reaches_the_last_record_of_a_second_read_block(self):
+        record=self.record([1,0,0]);bad=record.copy();bad[0]=float('nan')
+        self.assertIn('Invalid point cache values',self.render([record]*65536+[bad],failure=True))
+
     @staticmethod
     def record(color, y=0, rotation=(1,0,0,0)):
         return [0,y,0,*color,.9,.5,.05,.05,*rotation]+[0]*48

@@ -10,6 +10,7 @@
 // discarded splats: equal depths retain original record order, including +/-0.
 struct GaussianDepthOrder {
  std::vector<uint64_t> keys,scratch;
+ size_t workspaceBytes()const{return (keys.capacity()+scratch.capacity())*sizeof(uint64_t);}
  void sort(const osg::Vec3Array& positions,const osg::Vec3d& direction,osg::DrawElementsUInt& order){
   size_t count=positions.size();keys.resize(count);scratch.resize(count);order.resize(count);
   std::array<std::array<size_t,256>,4> counts{};

@@ -228,6 +228,7 @@ int main(int argc,char** argv){
    if(fwrite(image->data(),1,bytes,stdout)!=bytes)throw std::runtime_error("Video encoder pipe closed");
    completed=i+1;publish("rendering");
   }
+  memoryReport["point_render"]=points.workReport();
   publish("encoding");
   if(fflush(stdout)!=0)throw std::runtime_error("Cannot flush rendered frames");
   publish("closing");

@@ -34,8 +34,10 @@ struct PointScene {
  GaussianDepthOrder depthOrder;
  osg::ref_ptr<osg::Uniform> viewport,clipEnabled,clipMin,clipMax,clipRotation,pointSize;
  osg::ref_ptr<osg::Uniform> polygonCount,polygonVertices;
- std::vector<float> sh;std::vector<osg::Vec4> baseColors;
+ std::vector<float> sh;size_t shStride=0;
+ uint64_t sortUpdates=0,shUpdates=0;
  osg::Matrixd previous;bool updated=false,previousOrtho=false;
+ osg::Vec3d previousDirection;
 
  bool load(const std::filesystem::path& path){
   if(path.extension()!=L".spoints")return false;
@@ -45,6 +47,7 @@ struct PointScene {
   auto count=doc.at("count").get<size_t>();degree=doc.value("sh_degree",0);
   bool validStride=gaussian?(stride==62u||(degree==0&&stride==14u)):stride==7u;
   if(!count||count>200000000||!validStride||degree<0||degree>3)throw std::runtime_error("Invalid point count/layout");
+  shStride=size_t(degree+1)*(degree+1)*3;
   auto p=doc.at("origin").get<std::vector<double>>();if(p.size()!=3)throw std::runtime_error("Invalid point origin");
   origin.set(p[0],p[1],p[2]);for(double v:p)if(!std::isfinite(v))throw std::runtime_error("Invalid point origin");
   auto box=doc.at("bounds").get<std::vector<std::vector<double>>>();
@@ -59,11 +62,14 @@ struct PointScene {
   if(std::filesystem::file_size(binary)!=count*stride*sizeof(float))throw std::runtime_error("Truncated point cache");
   std::ifstream stream(binary,std::ios::binary);positions->reserve(count);colors->reserve(count);
   osg::ref_ptr<osg::Vec3Array> covA=new osg::Vec3Array,covB=new osg::Vec3Array;
-  if(gaussian){covA->reserve(count);covB->reserve(count);if(degree)sh.reserve(count*48);}
-  std::vector<float> record(stride);
-  for(size_t i=0;i<count;i++){
-   stream.read(reinterpret_cast<char*>(record.data()),stride*4);
-   if(!stream||!std::all_of(record.begin(),record.end(),[](float v){return std::isfinite(v);}))throw std::runtime_error("Invalid point cache values");
+  if(gaussian){covA->reserve(count);covB->reserve(count);if(degree)sh.reserve(count*shStride);}
+  const size_t blockCount=65536;std::vector<float> records(std::min(count,blockCount)*stride);
+  for(size_t start=0;start<count;start+=blockCount){
+   size_t n=std::min(blockCount,count-start);stream.read(reinterpret_cast<char*>(records.data()),n*stride*sizeof(float));
+   if(!stream)throw std::runtime_error("Invalid point cache values");
+   for(size_t i=0;i<n;i++){
+   const float* record=records.data()+i*stride;
+   if(!std::all_of(record,record+stride,[](float v){return std::isfinite(v);}))throw std::runtime_error("Invalid point cache values");
    positions->push_back(osg::Vec3(record[0],record[1],record[2]));colors->push_back(osg::Vec4(record[3],record[4],record[5],record[6]));
    // Gaussians below the renderer's alpha cutoff cannot contribute any pixel;
    // their stray centers must not drag the initial camera away from the model.
@@ -78,15 +84,15 @@ struct PointScene {
     double c[3][3]={};for(int a=0;a<3;a++)for(int b=0;b<3;b++)for(int k=0;k<3;k++)c[a][b]+=r[a][k]*r[b][k]*record[7+k]*record[7+k];
     for(auto& row:c)for(double v:row)if(!std::isfinite(v)||std::abs(v)>std::numeric_limits<float>::max())throw std::runtime_error("Gaussian covariance exceeds GPU numeric range");
     covA->push_back(osg::Vec3(c[0][0],c[0][1],c[0][2]));covB->push_back(osg::Vec3(c[1][1],c[1][2],c[2][2]));
-    if(degree)sh.insert(sh.end(),record.begin()+14,record.end());
+    if(degree)sh.insert(sh.end(),record+14,record+14+shStride);
    }
+  }
   }
   geometry=new osg::Geometry;geometry->setVertexArray(positions);geometry->setColorArray(colors,osg::Array::BIND_PER_VERTEX);
   geometry->setUseDisplayList(false);geometry->setUseVertexBufferObjects(true);geometry->setUserValue("share_point",true);geometry->setCullingActive(false);
   if(gaussian){
    geometry->setVertexAttribArray(6,covA,osg::Array::BIND_PER_VERTEX);geometry->setVertexAttribArray(7,covB,osg::Array::BIND_PER_VERTEX);
    order=new osg::DrawElementsUInt(GL_POINTS);order->resize(count);std::iota(order->begin(),order->end(),0);geometry->addPrimitiveSet(order);
-   if(degree)baseColors.assign(colors->begin(),colors->end());
   }else geometry->addPrimitiveSet(new osg::DrawArrays(GL_POINTS,0,count));
   auto state=geometry->getOrCreateStateSet();program=new osg::Program;
   program->addBindAttribLocation("covA",6);program->addBindAttribLocation("covB",7);
@@ -196,17 +202,25 @@ void main(){
  void update(osg::Camera* camera){
   if(!active)return;auto vp=camera->getViewport();viewport->set(osg::Vec2(vp->width(),vp->height()));
   bool orthographic=std::abs(camera->getProjectionMatrix()(3,3))>.5;
-  const auto& view=camera->getViewMatrix();if(!gaussian||(updated&&view==previous&&orthographic==previousOrtho))return;previous=view;updated=true;previousOrtho=orthographic;
+  const auto& view=camera->getViewMatrix();if(!gaussian||(updated&&view==previous&&orthographic==previousOrtho))return;
+  osg::Vec3d directionKey(view(0,2),view(1,2),view(2,2));
+  bool directionChanged=!updated||directionKey!=previousDirection;
+  bool colorChanged=!updated||orthographic!=previousOrtho||!orthographic||directionChanged;
+  previous=view;updated=true;previousOrtho=orthographic;previousDirection=directionKey;
   osg::Vec3d eye,center,up;camera->getViewMatrixAsLookAt(eye,center,up);eye-=origin;auto direction=center-(eye+origin);direction.normalize();
-  depthOrder.sort(*positions,direction,*order);order->dirty();
-  if(!degree)return;
+  // Translation and roll preserve relative depths. Use exact axis equality:
+  // no angular threshold, stale order or approximation during rotation.
+  if(directionChanged){depthOrder.sort(*positions,direction,*order);order->dirty();sortUpdates++;}
+  if(!degree||!colorChanged)return;
+  shUpdates++;
   for(size_t i=0;i<positions->size();i++){
    osg::Vec3d d=orthographic?direction:osg::Vec3d((*positions)[i])-eye;if(d.length2()<1e-20)d.set(0,0,1);d.normalize();double x=d.x(),y=d.y(),z=d.z();
    double basis[16]={.28209479177387814,-.4886025119029199*y,.4886025119029199*z,-.4886025119029199*x,
     1.0925484305920792*x*y,-1.0925484305920792*y*z,.31539156525252005*(2*z*z-x*x-y*y),-1.0925484305920792*x*z,.5462742152960396*(x*x-y*y),
     -.5900435899266435*y*(3*x*x-y*y),2.890611442640554*x*y*z,-.4570457994644658*y*(4*z*z-x*x-y*y),.3731763325901154*z*(2*z*z-3*x*x-3*y*y),
     -.4570457994644658*x*(4*z*z-x*x-y*y),1.445305721320277*z*(x*x-y*y),-.5900435899266435*x*(x*x-3*y*y)};
-   for(int channel=0;channel<3;channel++){double color=.5;for(int k=0;k<(degree+1)*(degree+1);k++)color+=basis[k]*sh[i*48+k*3+channel];(*colors)[i][channel]=std::max(0.0,color);}
+   for(int channel=0;channel<3;channel++){double color=.5;for(int k=0;k<(degree+1)*(degree+1);k++)color+=basis[k]*sh[i*shStride+k*3+channel];(*colors)[i][channel]=std::max(0.0,color);}
   }colors->dirty();
  }
+ nlohmann::json workReport()const{return {{"count",positions->size()},{"sort_updates",sortUpdates},{"sh_updates",shUpdates},{"sort_workspace_bytes",depthOrder.workspaceBytes()},{"sh_storage_bytes",sh.capacity()*sizeof(float)}};}
 };
