@@ -1,4 +1,8 @@
-# Resource optimization
+# Large-scene interaction and encoder recovery
+
+Follow [large-scene-recovery.md](large-scene-recovery.md): reproduce the original 21,579,838-Gaussian blade model and its failed 1,800-frame 4K60 job. Keep complete float ordering, implement capability-checked GPU radix sorting with direct GPU index drawing and exact multicore CPU fallback, diagnose encoder exit codes, probe actual hardware encoding and retry compatible encoding once. Independently compare full source indices and pixels, verify both full-length encoders, regress, package and inspect 1.11.0.
+
+## Previous resource optimization
 
 Follow [resource-optimization.md](resource-optimization.md) to measure and reduce repeated work while preserving complete Gaussian contributors, SH lighting, original textures and video quality. Guard on-demand refresh, block reading, independent sort/color invalidation and compact active SH storage with actual native protocol/pixel tests. Compare against the 1.10.1 executable, then package and inspect 1.10.2.
 

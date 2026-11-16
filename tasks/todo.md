@@ -1,4 +1,13 @@
-# Resource optimization acceptance
+# Large-scene recovery acceptance
+
+- [x] Preserve original failure evidence; identify ffmpeg access violation rather than memory exhaustion.
+- [x] Verify stable multicore and complete GPU float sorting; keep hardware/range/precision fallbacks.
+- [x] Match original pixels and all 21,579,838 indices at independent camera views.
+- [x] Export both original 1,800-frame 4K60 tasks and pass duration/frame/full-decoding checks.
+- [x] Run 218 regressions, including encoder recovery and real GPU viewer wake-up.
+- [x] Inspect and verify the final portable distribution.
+
+## Previous resource optimization acceptance
 
 - [x] Measure full bridge reference rendering and stationary viewer costs.
 - [x] Stop redundant draws; verify input, paging, clipping, resize and snapshot wake-up.
