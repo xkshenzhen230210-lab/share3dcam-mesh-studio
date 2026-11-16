@@ -1,4 +1,13 @@
-# Polygon selection acceptance
+# Gaussian display repair acceptance
+
+- [x] Reproduce the original bridge file and identify the stride-44 Gaussian preview loss.
+- [x] Keep every Gaussian without opacity/size compensation; ordinary point sampling unchanged.
+- [x] Verify compact-cache pixels, exact stable depth order, offscreen tails and orthographic splat size.
+- [x] Inspect actual same-view renders; decode full-scene video; preserve all 17 source crop fields.
+- [x] Run 201 regressions and build native/portable components.
+- [x] Inspect the packaged application and verify its distribution archive.
+
+## Previous polygon selection acceptance
 
 - [x] Preserve legacy boxes and original coordinates; validate and triangulate concave simple polygons.
 - [x] Verify LAS and Gaussian PLY record preservation, UV interpolation and no duplicate diagonal faces.

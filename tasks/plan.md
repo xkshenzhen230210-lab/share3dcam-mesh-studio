@@ -1,4 +1,10 @@
-# Polygon selection follow-up
+# Full Gaussian preview repair
+
+Reproduce the reported sparse bridge rendering from its original 13,026,917-Gaussian PLY. Preserve the sampled output as evidence, then remove Gaussian thinning while keeping ordinary point sampling. Compact SH0 display cache records without changing source/export records. Preserve exact depth sorting while replacing its scaling cost, retain visible offscreen tails, and correct orthographic splat projection.
+
+Check exact native depth-order equivalence, opacity contributors, compact/legacy pixels and orthographic size. Compare the same original scene and camera before/after, export and decode a complete video, verify original crop record bytes, run regression tests, package and inspect the fixed application.
+
+## Previous polygon selection follow-up
 
 Add an optional simple XY polygon to the existing oriented clipping descriptor. Use inclusive center filtering for original point records; triangulate concave outlines and clip mesh faces with source-space attribute interpolation. Keep old boxes compatible.
 

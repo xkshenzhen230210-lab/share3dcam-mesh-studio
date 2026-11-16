@@ -243,6 +243,17 @@ void writeState(const json& value,const wchar_t* destination=L"state.json"){
 }
 void state(const json& value){writeState(value);}
 int main(int argc,char**argv){try{
+ if(argc==3&&(std::string(argv[1])=="--test-depth-sort"||std::string(argv[1])=="--benchmark-depth-sort")){
+  osg::ref_ptr<osg::Vec3Array> positions=new osg::Vec3Array;osg::Vec3d direction(0,1,0);PointScene data;
+  if(std::string(argv[1])=="--benchmark-depth-sort"){data.load(fs::u8path(argv[2]));positions=data.positions;direction.set(.3,.8,-.2);direction.normalize();}
+  else{std::ifstream input(fs::u8path(argv[2]));json job;input>>job;auto d=job.at("direction");direction.set(d[0],d[1],d[2]);for(auto& p:job.at("positions"))positions->push_back({p[0],p[1],p[2]});}
+  std::vector<float> depths(positions->size());std::vector<unsigned> reference(positions->size());std::iota(reference.begin(),reference.end(),0);
+  for(size_t i=0;i<depths.size();i++)depths[i]=(*positions)[i]*direction;
+  auto now=std::chrono::steady_clock::now();std::sort(reference.begin(),reference.end(),[&](unsigned a,unsigned b){return depths[a]==depths[b]?a<b:depths[a]>depths[b];});double baseline=std::chrono::duration<double>(std::chrono::steady_clock::now()-now).count();
+  GaussianDepthOrder sorter;osg::ref_ptr<osg::DrawElementsUInt> result=new osg::DrawElementsUInt(GL_POINTS);now=std::chrono::steady_clock::now();sorter.sort(*positions,direction,*result);double optimized=std::chrono::duration<double>(std::chrono::steady_clock::now()-now).count();
+  json output={{"matches_reference",std::equal(reference.begin(),reference.end(),result->begin())},{"count",positions->size()},{"reference_seconds",baseline},{"radix_seconds",optimized}};
+  if(std::string(argv[1])=="--test-depth-sort")output["indices"]=std::vector<unsigned>(result->begin(),result->end());std::cout<<output.dump();return 0;
+ }
  if(argc==3&&std::string(argv[1])=="--test-polygon"){
   std::ifstream input(fs::u8path(argv[2]));json value;input>>value;auto p=readPolygon(value);auto triangles=polygonTriangles(p);json out=json::array();for(auto t:triangles)out.push_back({{t[0].x(),t[0].y()},{t[1].x(),t[1].y()},{t[2].x(),t[2].y()}});std::cout<<out.dump();return 0;
  }

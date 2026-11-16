@@ -10,12 +10,13 @@ from converter import RUNTIME
 
 
 class PointRenderTests(unittest.TestCase):
-    def render(self, records, clip=None, failure=False):
+    def render(self, records, clip=None, failure=False, compact=False):
         with tempfile.TemporaryDirectory() as folder:
             folder=Path(folder)
-            np.asarray(records,dtype='<f4').tofile(folder/'points.bin')
+            values=np.asarray(records,dtype='<f4');values=values[:,:14] if compact else values
+            values.tofile(folder/'points.bin')
             (folder/'model.spoints').write_text(json.dumps(dict(format='share3dcam-points',version=1,kind='gaussian',
-                data='points.bin',count=len(records),origin=[0,0,0],bounds=[[-1,-1,-1],[1,1,1]],stride_floats=62,sh_degree=0)))
+                data='points.bin',count=len(records),origin=[0,0,0],bounds=[[-1,-1,-1],[1,1,1]],stride_floats=14 if compact else 62,sh_degree=0)))
             pose=dict(eye=[0,-5,0],center=[0,0,0],up=[0,0,1],fovy=45)
             job=dict(source=str(folder/'model.spoints'),width=128,height=128,fps=30,frames=[pose],progress=str(folder/'progress.json'),clip_box=clip)
             (folder/'job.json').write_text(json.dumps(job))
@@ -34,6 +35,17 @@ class PointRenderTests(unittest.TestCase):
         b=self.record([2,0,0]);b[6]=.2
         red_a=int(self.render([a])[64,64,0]);red_b=int(self.render([b])[64,64,0])
         self.assertGreater(red_b,red_a+35)
+
+    def test_compact_sh0_cache_matches_legacy_pixels(self):
+        records=[self.record([1,0,0],-.2),self.record([0,0,1],.2)]
+        np.testing.assert_array_equal(self.render(records),self.render(records,compact=True))
+
+    def test_orthographic_splats_keep_their_size_when_camera_depth_changes(self):
+        record=self.record([1,0,0]);record[7:10]=[.7,.7,.7]
+        frames=[dict(eye=[0,-depth,0],center=[0,0,0],up=[0,0,1],fovy=45,orthographic_height=4) for depth in (5,10)]
+        images=self.render_camera_frames([record],frames)
+        np.testing.assert_array_equal(images[0],images[1])
+        self.assertGreater(np.count_nonzero(images[0,64,:,0]>80),50)
 
     def test_covariance_overflow_fails_before_output(self):
         record=self.record([1,0,0]);record[7:10]=[1e20]*3

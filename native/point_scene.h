@@ -16,6 +16,7 @@
 #include "json.hpp"
 #include "horizontal_frame.h"
 #include "polygon_clip.h"
+#include "gaussian_depth_order.h"
 
 // Independent OpenGL EWA splat implementation. Original PLY parameters stay in
 // the source; only this render cache contains activated scales and covariances.
@@ -30,10 +31,11 @@ struct PointScene {
  osg::ref_ptr<osg::Geometry> geometry;
  osg::ref_ptr<osg::Program> program;
  osg::ref_ptr<osg::DrawElementsUInt> order;
+ GaussianDepthOrder depthOrder;
  osg::ref_ptr<osg::Uniform> viewport,clipEnabled,clipMin,clipMax,clipRotation,pointSize;
  osg::ref_ptr<osg::Uniform> polygonCount,polygonVertices;
  std::vector<float> sh;std::vector<osg::Vec4> baseColors;
- osg::Matrixd previous;bool updated=false;
+ osg::Matrixd previous;bool updated=false,previousOrtho=false;
 
  bool load(const std::filesystem::path& path){
   if(path.extension()!=L".spoints")return false;
@@ -41,7 +43,8 @@ struct PointScene {
   if(doc.at("format")!="share3dcam-points"||doc.at("version")!=1)throw std::runtime_error("Invalid point cache");
   gaussian=doc.at("kind")=="gaussian";auto stride=doc.at("stride_floats").get<unsigned>();
   auto count=doc.at("count").get<size_t>();degree=doc.value("sh_degree",0);
-  if(!count||count>200000000||stride!=(gaussian?62u:7u)||degree<0||degree>3)throw std::runtime_error("Invalid point count/layout");
+  bool validStride=gaussian?(stride==62u||(degree==0&&stride==14u)):stride==7u;
+  if(!count||count>200000000||!validStride||degree<0||degree>3)throw std::runtime_error("Invalid point count/layout");
   auto p=doc.at("origin").get<std::vector<double>>();if(p.size()!=3)throw std::runtime_error("Invalid point origin");
   origin.set(p[0],p[1],p[2]);for(double v:p)if(!std::isfinite(v))throw std::runtime_error("Invalid point origin");
   auto box=doc.at("bounds").get<std::vector<std::vector<double>>>();
@@ -115,8 +118,9 @@ void main(){
   mat3 view=mat3(gl_ModelViewMatrix);mat3 c=view*worldCov*transpose(view);
   float z=-eye.z;vec2 focal=0.5*viewportSize*vec2(gl_ProjectionMatrix[0][0],gl_ProjectionMatrix[1][1]);
   vec2 limited=clamp(eye.xy/z,-1.3/vec2(gl_ProjectionMatrix[0][0],gl_ProjectionMatrix[1][1]),1.3/vec2(gl_ProjectionMatrix[0][0],gl_ProjectionMatrix[1][1]))*z;
-  vec3 jx=vec3(focal.x/z,0.0,focal.x*limited.x/(z*z));
-  vec3 jy=vec3(0.0,focal.y/z,focal.y*limited.y/(z*z));
+  bool orthographic=abs(gl_ProjectionMatrix[3][3])>0.5;
+  vec3 jx=orthographic?vec3(focal.x,0.0,0.0):vec3(focal.x/z,0.0,focal.x*limited.x/(z*z));
+  vec3 jy=orthographic?vec3(0.0,focal.y,0.0):vec3(0.0,focal.y/z,focal.y*limited.y/(z*z));
   covariance=vec3(dot(jx,c*jx)+0.3,dot(jx,c*jy),dot(jy,c*jy)+0.3);
  }
 }
@@ -132,6 +136,11 @@ void main(){
  float l1=max(0.1,mid+spread),l2=max(0.1,mid-spread);
  vec2 axis=abs(c.y)>0.000001?normalize(vec2(c.y,l1-c.x)):(c.x>=c.z?vec2(1,0):vec2(0,1));
  vec2 a=axis*sqrt(l1),b=vec2(-axis.y,axis.x)*sqrt(l2);
+ // Reject only quads whose entire footprint is outside the viewport. A center
+ // outside the screen can still contribute a large Gaussian tail inside it.
+ vec4 projected=gl_in[0].gl_Position;vec2 center=(projected.xy/projected.w*0.5+0.5)*viewportSize;
+ vec2 extent=3.0*(abs(a)+abs(b));
+ if(any(lessThan(center+extent,vec2(0.0)))||any(greaterThan(center-extent,viewportSize)))return;
  for(int i=0;i<4;i++){
   coordinate=vec2((i%2==0)?-3.0:3.0,(i<2)?-3.0:3.0);
   vec2 offset=a*coordinate.x+b*coordinate.y;vec4 center=gl_in[0].gl_Position;
@@ -186,13 +195,13 @@ void main(){
  }
  void update(osg::Camera* camera){
   if(!active)return;auto vp=camera->getViewport();viewport->set(osg::Vec2(vp->width(),vp->height()));
-  const auto& view=camera->getViewMatrix();if(!gaussian||(updated&&view==previous))return;previous=view;updated=true;
+  bool orthographic=std::abs(camera->getProjectionMatrix()(3,3))>.5;
+  const auto& view=camera->getViewMatrix();if(!gaussian||(updated&&view==previous&&orthographic==previousOrtho))return;previous=view;updated=true;previousOrtho=orthographic;
   osg::Vec3d eye,center,up;camera->getViewMatrixAsLookAt(eye,center,up);eye-=origin;auto direction=center-(eye+origin);direction.normalize();
-  std::vector<float> depths(positions->size());for(size_t i=0;i<depths.size();i++)depths[i]=(*positions)[i]*direction;
-  std::sort(order->begin(),order->end(),[&](unsigned a,unsigned b){return depths[a]==depths[b]?a<b:depths[a]>depths[b];});order->dirty();
+  depthOrder.sort(*positions,direction,*order);order->dirty();
   if(!degree)return;
   for(size_t i=0;i<positions->size();i++){
-   osg::Vec3d d=osg::Vec3d((*positions)[i])-eye;if(d.length2()<1e-20)d.set(0,0,1);d.normalize();double x=d.x(),y=d.y(),z=d.z();
+   osg::Vec3d d=orthographic?direction:osg::Vec3d((*positions)[i])-eye;if(d.length2()<1e-20)d.set(0,0,1);d.normalize();double x=d.x(),y=d.y(),z=d.z();
    double basis[16]={.28209479177387814,-.4886025119029199*y,.4886025119029199*z,-.4886025119029199*x,
     1.0925484305920792*x*y,-1.0925484305920792*y*z,.31539156525252005*(2*z*z-x*x-y*y),-1.0925484305920792*x*z,.5462742152960396*(x*x-y*y),
     -.5900435899266435*y*(3*x*x-y*y),2.890611442640554*x*y*z,-.4570457994644658*y*(4*z*z-x*x-y*y),.3731763325901154*z*(2*z*z-3*x*x-3*y*y),

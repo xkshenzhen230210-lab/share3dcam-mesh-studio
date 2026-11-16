@@ -1,8 +1,8 @@
 """Streaming point sources and byte-preserving source-format exports.
 
 The .spoints v1 render manifest uses little-endian float32 records. Points have
-7 floats (local xyz, rgba); Gaussians have 62 (xyz, rgba, activated scale xyz,
-unit quaternion wxyz, 16 RGB SH coefficient triplets). Origin and world bounds
+7 floats (local xyz, rgba); SH0 Gaussians have 14 (xyz, rgba, activated scale xyz,
+unit quaternion wxyz). SH1–SH3 use 62 with 16 RGB SH coefficient triplets. Origin and world bounds
 remain double precision. This render cache is never used as an export source.
 
 Gaussian crop semantics are center inclusion, with inclusive box boundaries.
@@ -254,7 +254,7 @@ def _rgb(reader, records):
 
 def _pack(reader, records, xyz, origin):
     gaussian = reader.kind == 'gaussian'
-    packed = np.zeros((len(records), 62 if gaussian else 7), dtype='<f4')
+    packed = np.zeros((len(records), (62 if reader.sh_degree else 14) if gaussian else 7), dtype='<f4')
     packed[:, :3] = xyz-origin
     if gaussian:
         dc = np.column_stack([records[f'f_dc_{i}'] for i in range(3)])
@@ -270,7 +270,7 @@ def _pack(reader, records, xyz, origin):
         packed[:, 6] = np.exp(-np.logaddexp(0, -opacity))
         packed[:, 7:10] = np.exp(scales)
         packed[:, 10:14] = rotation/norms[:, None]
-        packed[:, 14:17] = dc
+        if reader.sh_degree:packed[:, 14:17] = dc
         if reader.rest:
             rest = np.column_stack([records[n] for n in reader.rest])
             count = len(reader.rest)//3
@@ -288,7 +288,7 @@ def _pack(reader, records, xyz, origin):
 
 
 def prepare_points(source, folder, control=None, preview=False):
-    """Prepare a native render cache; preview only samples at most 300,000 points."""
+    """Prepare render data. Ordinary point previews sample; Gaussian opacity needs all splats."""
     control = _control(control)
     control.check()
     source, folder = Path(source).resolve(), Path(folder)
@@ -309,7 +309,7 @@ def prepare_points(source, folder, control=None, preview=False):
             _bounds_update(bounds, reader.xyz(records))
             control.log('读取点云范围 / Reading point bounds', 15*(start+len(records))/reader.count)
         origin = (bounds[0] + bounds[1])/2
-    stride = max(1, math.ceil(reader.count/PREVIEW_LIMIT)) if preview else 1
+    stride = max(1, math.ceil(reader.count/PREVIEW_LIMIT)) if preview and reader.kind!='gaussian' else 1
     rendered = 0
     footprint = np.empty((0, 2))
     partial = folder/'points.bin.partial'
@@ -333,7 +333,7 @@ def prepare_points(source, folder, control=None, preview=False):
                'source': str(source), 'data': data.name, 'count': rendered, 'render_count': rendered,
                'source_count': reader.count, 'origin': origin.tolist(), 'bounds': bounds.tolist(),
                'footprint': footprint.tolist(),
-               'stride_floats': 62 if reader.kind == 'gaussian' else 7, 'sh_degree': reader.sh_degree,
+               'stride_floats': (62 if reader.sh_degree else 14) if reader.kind == 'gaussian' else 7, 'sh_degree': reader.sh_degree,
                'preview': bool(preview), 'sampled': stride > 1, 'sample_stride': stride,
                'position_encoding': 'float32_relative_to_double_origin',
                'crop_semantics': 'center_inside_inclusive_box', 'source_size': before.st_size,

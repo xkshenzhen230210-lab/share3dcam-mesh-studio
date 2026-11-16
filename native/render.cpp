@@ -138,7 +138,11 @@ osg::Vec3d vector(const json& camera,const char* key){
 void cameraPose(osg::Camera* camera,const json& pose,double aspect){
  auto eye=vector(pose,"eye"),center=vector(pose,"center"),up=vector(pose,"up");double fovy=pose.value("fovy",35.);
  if((center-eye).length2()<=1e-20||((center-eye)^up).length2()<=1e-20||!std::isfinite(fovy)||fovy<=1||fovy>=179)throw std::runtime_error("Degenerate camera pose");
- camera->setViewMatrixAsLookAt(eye,center,up);camera->setProjectionMatrixAsPerspective(fovy,aspect,.01,100000.);
+ camera->setViewMatrixAsLookAt(eye,center,up);
+ if(pose.contains("orthographic_height")){
+  double height=pose.at("orthographic_height");if(!std::isfinite(height)||height<=0||height>1e9)throw std::runtime_error("Invalid orthographic height");
+  camera->setProjectionMatrixAsOrtho(-height*aspect*.5,height*aspect*.5,-height*.5,height*.5,.01,100000.);
+ }else camera->setProjectionMatrixAsPerspective(fovy,aspect,.01,100000.);
 }
 
 int main(int argc,char** argv){
