@@ -46,6 +46,7 @@ static std::function<void(const std::string&)> polygonAction;
 static bool polygonDrawing=false;
 static UINT dragButton=0;static POINT dragPoint{};static MouseMotion dragMotion=MouseMotion::Orbit;
 static bool measureMode=false,dragMoved=false;
+static bool viewDirty=true;static uint64_t renderedFrames=0;
 void stopMouseDrag(HWND window){
  if(dragButton&&mouseEnd)mouseEnd();
  dragButton=0;
@@ -62,6 +63,8 @@ void updateMouseDrag(LPARAM detail){
  }
 }
 LRESULT CALLBACK navigationWindowProcedure(HWND window,UINT message,WPARAM key,LPARAM detail){
+ if(message==WM_PAINT||message==WM_SIZE||message==WM_SHOWWINDOW||message==WM_DISPLAYCHANGE||
+    message==WM_LBUTTONUP||message==WM_RBUTTONUP||message==WM_MBUTTONUP)viewDirty=true;
  if(polygonDrawing){
   if(message==WM_LBUTTONDOWN){SetFocus(window);if(polygonClick)polygonClick({GET_X_LPARAM(detail),GET_Y_LPARAM(detail)});return 0;}
   if(message==WM_RBUTTONDOWN){if(polygonAction)polygonAction("undo");return 0;}
@@ -241,7 +244,7 @@ void writeState(const json& value,const wchar_t* destination=L"state.json"){
  std::ofstream f("state.tmp");f<<value.dump();f.close();
  MoveFileExW(L"state.tmp",destination,MOVEFILE_REPLACE_EXISTING);
 }
-void state(const json& value){writeState(value);}
+void state(json value){if(value.contains("ready"))value["rendered_frames"]=renderedFrames;writeState(value);}
 int main(int argc,char**argv){try{
  if(argc==3&&(std::string(argv[1])=="--test-depth-sort"||std::string(argv[1])=="--benchmark-depth-sort")){
   osg::ref_ptr<osg::Vec3Array> positions=new osg::Vec3Array;osg::Vec3d direction(0,1,0);PointScene data;
@@ -411,6 +414,7 @@ int main(int argc,char**argv){try{
  json lohi={selectedBounds.xMin(),selectedBounds.yMin(),selectedBounds.zMin(),selectedBounds.xMax(),selectedBounds.yMax(),selectedBounds.zMax()};
  auto home=sphere.center();double distance=std::max(1.f,sphere.radius());manip->setHomePosition(home+frame.direction(osg::Vec3d(distance*1.2,-distance*1.8,distance*1.3)),home,osg::Vec3d(0,0,1));viewer.home();
  long long last=-1;int frames=0;double fovy=35.,fixedAspect=0.,navigationSpeed=1.5,mouseSensitivity=1.;unsigned mouseSteps=0;
+ osg::Matrixd renderedView,renderedProjection;
  osg::BoundingBoxd clipBounds;
  CropPolygon polygon,draftPolygon;std::string polygonError;unsigned polygonRevision=0;
  auto polygonNode=new osg::Geode;auto polygonGeometry=new osg::Geometry;auto polygonLines=new osg::Vec3dArray;
@@ -432,7 +436,7 @@ int main(int argc,char**argv){try{
   else if(action=="clear"){polygon.clear();draftPolygon.clear();polygonDrawing=false;}
   else if(action=="cancel"){draftPolygon.clear();polygonDrawing=false;}
   else if(action=="finish"&&polygonDrawing){try{polygonTriangles(draftPolygon);polygon=draftPolygon;polygonDrawing=false;}catch(const std::exception& e){polygonError=e.what();}}
-  polygonRevision++;refreshPolygon();
+  polygonRevision++;refreshPolygon();viewDirty=true;
  };
  std::optional<osg::Vec3d> lastPickedPoint;
  std::optional<osg::Vec3d> measureHit;
@@ -479,7 +483,7 @@ int main(int argc,char**argv){try{
   auto v=frame.local(p.center+right*(x*pixel)-up*(y*pixel));osg::Vec2d xy(v.x(),v.y());
   if(draftPolygon.size()>=3&&(xy-draftPolygon.front()).length()<pixel*8){polygonAction("finish");return;}
   if(draftPolygon.empty()||(xy-draftPolygon.back()).length2()>1e-16)draftPolygon.push_back(xy);
-  polygonError.clear();polygonRevision++;refreshPolygon();
+  polygonError.clear();polygonRevision++;refreshPolygon();viewDirty=true;
  };
  mouseStart=[&](MouseMotion motion,POINT cursor,bool centerOnPoint){
   if(polygonDrawing)return false;
@@ -561,8 +565,9 @@ int main(int argc,char**argv){try{
  };
  auto lastState=std::chrono::steady_clock::now(),lastMove=lastState;publish();
  while(!viewer.done()&&IsWindow(parent)){
-  GetClientRect(parent,&r);if(r.right!=w||r.bottom!=h){w=std::max(10L,r.right);h=std::max(10L,r.bottom);SetWindowPos(child,nullptr,0,0,w,h,SWP_NOZORDER);gc->resized(0,0,w,h);projection();}
+  GetClientRect(parent,&r);if(r.right!=w||r.bottom!=h){w=std::max(10L,r.right);h=std::max(10L,r.bottom);SetWindowPos(child,nullptr,0,0,w,h,SWP_NOZORDER);gc->resized(0,0,w,h);projection();viewDirty=true;}
   if(frames++%3==0){try{std::ifstream f("command.json");json command;if(f){f>>command;long long seq=command.value("seq",0LL);if(seq!=last){last=seq;if(command.value("quit",false))break;
+    viewDirty=true;
     if(command.contains("aspect")){double next=command.at("aspect");if(std::isfinite(next)&&next>=0&&next<=10){fixedAspect=next;projection();}}
     if(command.contains("polygon_action"))polygonAction(command.at("polygon_action").get<std::string>());
     bool enabled=command.value("enabled",false)&&!polygonDrawing;auto b=command.value("box",std::vector<double>{-1,-1,-1,1,1,1});
@@ -643,7 +648,6 @@ int main(int argc,char**argv){try{
      if((center-eye).length2()>1e-20&&((center-eye)^up).length2()>1e-20&&std::isfinite(nextFov)&&nextFov>1&&nextFov<179){lastPickedPoint.reset();manip->applyPose(eye,center,up);fovy=nextFov;projection();}
     }
    }}}catch(...){}}
-  if(frames%30==0){DisplayMaterials materials;model->accept(materials);}
   if(frames%3==0){
    try{
     std::ifstream input("snapshot_request.json");json request;
@@ -665,9 +669,20 @@ int main(int argc,char**argv){try{
    if(delta.length2()>0)manip->applyPose(eye+delta,center+delta,up);
   }
   if(polygonOrtho||wasPolygonDrawing){projection();wasPolygonDrawing=polygonOrtho;}
-  viewer.advance();viewer.eventTraversal();viewer.updateTraversal();points.update(viewer.getCamera());
-  if(analysisVisible)analysis->update(viewer.getCamera());
-  meshPolygon.update(viewer.getCamera());viewer.renderingTraversals();
+  // Pump input even while stationary. OSG's demand checks include page arrivals,
+  // update callbacks and incremental GL compilation, so detail keeps loading.
+  bool needsFrame=viewer.checkNeedToDoFrame(),sceneUpdate=viewer.requiresUpdateSceneGraph();
+  viewer.advance();viewer.eventTraversal();
+  auto camera=viewer.getCamera();auto nextView=manip->getInverseMatrix();
+  bool changed=viewDirty||snapshot->requested||!renderedFrames||nextView!=renderedView||camera->getProjectionMatrix()!=renderedProjection;
+  if((needsFrame||changed)&&IsWindowVisible(child)&&!IsIconic(GetAncestor(parent,GA_ROOT))){
+   viewDirty=false;viewer.updateTraversal();
+   if(!renderedFrames||sceneUpdate){DisplayMaterials materials;model->accept(materials);}
+   if(!analysisVisible)points.update(camera);
+   if(analysisVisible)analysis->update(camera);
+   meshPolygon.update(camera);viewer.renderingTraversals();renderedFrames++;
+   renderedView=camera->getViewMatrix();renderedProjection=camera->getProjectionMatrix();
+  }
   if(snapshot->image){
    bool saved=osgDB::writeImageFile(*snapshot->image,"snapshot.png");
    snapshot->image=nullptr;
