@@ -405,7 +405,7 @@ int main(int argc,char**argv){try{
  auto polygonNode=new osg::Geode;auto polygonGeometry=new osg::Geometry;auto polygonLines=new osg::Vec3dArray;
  polygonGeometry->setVertexArray(polygonLines);polygonGeometry->setColorArray(colors,osg::Array::BIND_OVERALL);polygonNode->addDrawable(polygonGeometry);
  polygonNode->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);polygonNode->getOrCreateStateSet()->setMode(GL_DEPTH_TEST,osg::StateAttribute::OFF);polygonNode->getOrCreateStateSet()->setAttribute(new osg::LineWidth(3));scene->addChild(polygonNode);
- bool polygonShow=true,wasPolygonDrawing=false;double polygonSpan=1;
+ bool polygonShow=true,wasPolygonDrawing=false,polygonOrtho=false;double polygonSpan=1;
  auto refreshPolygon=[&](){
   polygonLines->clear();auto& p=polygonDrawing?draftPolygon:polygon;
   double z=clipBounds.valid()?clipBounds.zMax():selectedBounds.zMax();
@@ -416,7 +416,7 @@ int main(int argc,char**argv){try{
  };
  polygonAction=[&](const std::string& action){
   polygonError.clear();
-  if(action=="start"){polygonDrawing=true;draftPolygon.clear();auto vp=viewer.getCamera()->getViewport();polygonSpan=std::max(selectedBounds.yMax()-selectedBounds.yMin(),(selectedBounds.xMax()-selectedBounds.xMin())*vp->height()/vp->width())*1.12;}
+  if(action=="start"){polygonDrawing=true;polygonOrtho=true;draftPolygon.clear();auto vp=viewer.getCamera()->getViewport();polygonSpan=std::max(selectedBounds.yMax()-selectedBounds.yMin(),(selectedBounds.xMax()-selectedBounds.xMin())*vp->height()/vp->width())*1.12;}
   else if(action=="undo"&&polygonDrawing&&!draftPolygon.empty())draftPolygon.pop_back();
   else if(action=="clear"){polygon.clear();draftPolygon.clear();polygonDrawing=false;}
   else if(action=="cancel"){draftPolygon.clear();polygonDrawing=false;}
@@ -468,6 +468,7 @@ int main(int argc,char**argv){try{
  mouseStart=[&](MouseMotion motion,POINT cursor,bool centerOnPoint){
   if(polygonDrawing)return false;
   if(!insideViewport(cursor))return false;
+  polygonOrtho=false;
   if(motion==MouseMotion::Look)return true;
   auto p=pose();
   auto hit=pick(p,cursor);
@@ -509,7 +510,7 @@ int main(int argc,char**argv){try{
  };
  mouseWheel=[&](POINT cursor,double steps){
   if(!insideViewport(cursor))return;
-  if(polygonDrawing){polygonSpan=std::clamp(polygonSpan*std::pow(.85,steps),1e-6,1e9);return;}
+  if(polygonOrtho){polygonSpan=std::clamp(polygonSpan*std::pow(.85,steps),1e-6,1e9);return;}
   auto p=pose();
   auto hit=pick(p,cursor);
   zoomMouseCamera(p,steps,hit?&*hit:nullptr);
@@ -530,7 +531,7 @@ int main(int argc,char**argv){try{
   manip->applyPose(eye+delta,center+delta,up);lastEventKey=key;navigationSteps++;return true;
  };
  auto projection=[&](){int vw=w,vh=h;if(fixedAspect>0){if(double(w)/h>fixedAspect)vw=std::max(1,int(h*fixedAspect));else vh=std::max(1,int(w/fixedAspect));}viewer.getCamera()->setViewport((w-vw)/2,(h-vh)/2,vw,vh);double aspect=fixedAspect>0?fixedAspect:double(w)/h;
-  if(polygonDrawing)viewer.getCamera()->setProjectionMatrixAsOrtho(-polygonSpan*aspect*.5,polygonSpan*aspect*.5,-polygonSpan*.5,polygonSpan*.5,-100000.,100000.);
+  if(polygonOrtho)viewer.getCamera()->setProjectionMatrixAsOrtho(-polygonSpan*aspect*.5,polygonSpan*aspect*.5,-polygonSpan*.5,polygonSpan*.5,-100000.,100000.);
   else viewer.getCamera()->setProjectionMatrixAsPerspective(fovy,aspect,.01,100000.);};
  auto publish=[&](){
   auto p=pose();
@@ -602,6 +603,9 @@ int main(int argc,char**argv){try{
     scene->getOrCreateStateSet()->setAttributeAndModes(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK,command.value("wire",false)?osg::PolygonMode::LINE:osg::PolygonMode::FILL));
     std::string view=command.value("view",std::string());
     if(!view.empty())lastPickedPoint.reset();
+    if(view=="front"||view=="right"||view=="fit")polygonOrtho=false;
+    if(view=="top"&&!polygon.empty())polygonOrtho=true;
+    if(fixedAspect>0&&!polygonDrawing)polygonOrtho=false;
     if(view=="fit"&&analysisVisible){
      auto p=pose();auto viewport=viewer.getCamera()->getViewport();
      fitClipBox(p,analysis->fitBounds,viewport->width()/viewport->height());
@@ -645,7 +649,7 @@ int main(int argc,char**argv){try{
    auto delta=navigationDelta(center-eye,up,held('D')-held('A'),held('W')-held('S'),held('Q')-held('E'),speed,dt);
    if(delta.length2()>0)manip->applyPose(eye+delta,center+delta,up);
   }
-  if(polygonDrawing||wasPolygonDrawing){projection();wasPolygonDrawing=polygonDrawing;}
+  if(polygonOrtho||wasPolygonDrawing){projection();wasPolygonDrawing=polygonOrtho;}
   viewer.advance();viewer.eventTraversal();viewer.updateTraversal();points.update(viewer.getCamera());
   if(analysisVisible)analysis->update(viewer.getCamera());
   meshPolygon.update(viewer.getCamera());viewer.renderingTraversals();
